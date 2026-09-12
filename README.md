@@ -205,13 +205,7 @@ paru -S bilibili-tui
 paru -S bilibili-tui-bin
 ```
 
-#### 方法二：使用 Homebrew (macOS/Linux)
-
-```bash
-brew install maredevi/tap/bilibili-tui
-```
-
-#### 方法三：使用 Cargo
+#### 方法二：使用 Cargo
 
 ```bash
 # 克隆仓库
@@ -225,7 +219,7 @@ cargo build --release
 ./target/release/bilibili-tui
 ```
 
-#### 方法四：从源码编译（开发版本）
+#### 方法三：从源码编译（开发版本）
 
 ```bash
 # 从 git 仓库克隆并构建
@@ -236,7 +230,7 @@ cargo install --path .
 
 > 注意：当前版本尚未发布到 crates.io
 
-#### 方法五：使用 mise（推荐用于开发）
+#### 方法四：使用 mise（推荐用于开发）
 
 ```bash
 # 安装 mise（如果未安装）
@@ -257,7 +251,7 @@ mise exec cargo build
 mise exec cargo run
 ```
 
-#### 方法六：使用 Nix Flake（NixOS / Nix 用户）
+#### 方法五：使用 Nix Flake（NixOS / Nix 用户）
 
 ```bash
 # 克隆仓库

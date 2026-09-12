@@ -2,11 +2,11 @@
 name = "bilibili-tui"
 version = "1.0.11"
 edition = "2024"
-authors = ["MareDevi <me@maredevi.moe>"]
+authors = ["qingyouyu <19863628661@163.com>"]
 description = "A terminal user interface (TUI) client for Bilibili"
 license = "MIT"
-repository = "https://github.com/MareDevi/bilibili-tui"
-homepage = "https://github.com/MareDevi/bilibili-tui"
+repository = "https://github.com/qingyouyuit/bilibili-tui"
+homepage = "https://github.com/qingyouyuit/bilibili-tui"
 
 [dependencies]
 anyhow = "1.0.102"
