@@ -1,7 +1,7 @@
 //! Video detail page showing video info, comments, and related videos
 
 use super::video_card::{VideoCard, VideoCardGrid};
-use super::{Component, Theme, shortcut_footer};
+use super::{Component, Theme, format_pubdate, shortcut_footer};
 use crate::api::client::ApiClient;
 use crate::api::comment::CommentItem;
 use crate::api::video::{RelatedVideoItem, VideoInfo};
@@ -164,7 +164,8 @@ impl VideoDetailPage {
                         video.format_duration(),
                         video.cover_url(),
                     )
-                    .with_uploader_mid(video.owner.as_ref().and_then(|owner| owner.mid));
+                    .with_uploader_mid(video.owner.as_ref().and_then(|owner| owner.mid))
+                    .with_pubdate(video.pubdate.map(format_pubdate));
                     self.related_card_grid.add_card(card);
                 }
             }

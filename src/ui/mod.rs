@@ -46,6 +46,17 @@ use ratatui::{
     prelude::{Color, Line, Modifier, Rect, Span, Style},
 };
 
+/// Format a Unix timestamp (seconds) as a local date, e.g. `2024-01-15`.
+pub fn format_pubdate(timestamp: i64) -> String {
+    chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|dt| {
+            dt.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
 /// Build the centered, bracketed shortcut footer used across list pages.
 /// Each tuple is `(shortcut, label, color)`; shortcut text is emphasized while
 /// labels and brackets use the secondary foreground.

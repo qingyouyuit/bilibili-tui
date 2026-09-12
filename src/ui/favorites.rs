@@ -1,4 +1,4 @@
-use super::{Component, Theme, VideoCard, VideoCardGrid, shortcut_footer};
+use super::{Component, Theme, VideoCard, VideoCardGrid, format_pubdate, shortcut_footer};
 use crate::api::favorite::{
     CollectedFolder, FavoriteFolder, FavoriteResourceData, FavoriteSource, SeasonArchivesData,
     WatchLaterData,
@@ -152,6 +152,7 @@ impl FavoritesPage {
                 .map(|upper| upper.name.clone())
                 .unwrap_or_else(|| "未知UP".to_string());
             let uploader_mid = item.upper.as_ref().map(|upper| upper.mid);
+            let pubdate = item.pubtime.map(format_pubdate);
             let views = item
                 .cnt_info
                 .and_then(|count| count.play)
@@ -167,7 +168,8 @@ impl FavoritesPage {
                     format_duration(item.duration.unwrap_or_default()),
                     item.cover,
                 )
-                .with_uploader_mid(uploader_mid),
+                .with_uploader_mid(uploader_mid)
+                .with_pubdate(pubdate),
             );
         }
         self.finish_load();

@@ -80,6 +80,8 @@ pub struct SearchVideoItem {
     #[serde(rename = "danmaku")]
     pub danmaku: Option<i64>,
     pub mid: Option<i64>,
+    #[serde(default)]
+    pub pubdate: Option<i64>,
 }
 
 impl SearchVideoItem {

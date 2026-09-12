@@ -1,7 +1,7 @@
 //! Search page with video card grid display
 
 use super::video_card::{VideoCard, VideoCardGrid};
-use super::{Component, Theme, shortcut_footer};
+use super::{Component, Theme, format_pubdate, shortcut_footer};
 use crate::api::client::ApiClient;
 use crate::api::search::{HotwordItem, SearchType, SearchVideoItem};
 use crate::application::AppAction;
@@ -99,7 +99,8 @@ impl SearchPage {
                 item.duration.clone().unwrap_or_default(),
                 item.cover_url(),
             )
-            .with_uploader_mid(item.mid);
+            .with_uploader_mid(item.mid)
+            .with_pubdate(item.pubdate.map(format_pubdate));
             self.grid.add_card(card);
             self.card_actions.push(action.unwrap_or(AppAction::None));
         }
@@ -125,7 +126,8 @@ impl SearchPage {
                 item.duration.clone().unwrap_or_default(),
                 item.cover_url(),
             )
-            .with_uploader_mid(item.mid);
+            .with_uploader_mid(item.mid)
+            .with_pubdate(item.pubdate.map(format_pubdate));
             self.grid.add_card(card);
             self.card_actions.push(action.unwrap_or(AppAction::None));
         }
@@ -198,6 +200,10 @@ impl SearchPage {
         };
         let duration = item.get("duration").and_then(|v| v.as_str()).unwrap_or("-");
         let cover = fix_cover_url(item.get("pic").and_then(|v| v.as_str()));
+        let pubdate = item
+            .get("pubdate")
+            .and_then(|v| v.as_i64())
+            .map(format_pubdate);
         let action = bvid
             .as_ref()
             .map(|b| AppAction::OpenVideoDetail(b.clone(), aid.unwrap_or(0)))
@@ -211,7 +217,8 @@ impl SearchPage {
                 views,
                 duration.to_string(),
                 cover,
-            ),
+            )
+            .with_pubdate(pubdate),
             action,
         )
     }

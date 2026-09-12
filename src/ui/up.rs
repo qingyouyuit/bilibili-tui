@@ -1,4 +1,4 @@
-use super::{Component, Theme, VideoCard, VideoCardGrid, shortcut_footer};
+use super::{Component, Theme, VideoCard, VideoCardGrid, format_pubdate, shortcut_footer};
 use crate::api::{
     favorite::{FavoriteFolder, FavoriteOrder, FavoriteResourceData},
     space::{RelationStat, SpaceInfo, SpaceVideoData, SpaceVideoOrder},
@@ -117,7 +117,8 @@ impl UpPage {
                 duration,
                 video.pic,
             )
-            .with_uploader_mid(Some(video.mid.unwrap_or(self.mid)));
+            .with_uploader_mid(Some(video.mid.unwrap_or(self.mid)))
+            .with_pubdate(video.created.map(format_pubdate));
             self.videos.add_card(card);
         }
     }
@@ -143,6 +144,7 @@ impl UpPage {
                 .map(|upper| upper.name.clone())
                 .unwrap_or_else(|| "未知UP".to_string());
             let upper_mid = media.upper.as_ref().map(|upper| upper.mid);
+            let pubdate = media.pubtime.map(format_pubdate);
             let views = media
                 .cnt_info
                 .as_ref()
@@ -158,7 +160,8 @@ impl UpPage {
                 format_duration(media.duration.unwrap_or_default()),
                 media.cover,
             )
-            .with_uploader_mid(upper_mid);
+            .with_uploader_mid(upper_mid)
+            .with_pubdate(pubdate);
             self.favorite_videos.add_card(card);
         }
         self.loading = false;

@@ -93,6 +93,8 @@ pub struct FavoriteMedia {
     pub title: String,
     pub cover: Option<String>,
     pub duration: Option<i64>,
+    #[serde(default)]
+    pub pubtime: Option<i64>,
     pub upper: Option<FavoriteUpper>,
     pub cnt_info: Option<FavoriteCountInfo>,
 }

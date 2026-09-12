@@ -25,6 +25,8 @@ pub struct VideoCard {
     pub author: String,
     pub views: String,
     pub duration: String,
+    /// Formatted publish date (e.g. `2024-01-15`), when known.
+    pub pubdate: Option<String>,
     pub pic_url: Option<String>,
     pub cover: Option<StatefulProtocol>,
 }
@@ -47,9 +49,16 @@ impl VideoCard {
             author,
             views,
             duration,
+            pubdate: None,
             pic_url,
             cover: None,
         }
+    }
+
+    /// Attach a formatted publish date to the card.
+    pub fn with_pubdate(mut self, pubdate: Option<String>) -> Self {
+        self.pubdate = pubdate;
+        self
     }
 
     pub fn with_uploader_mid(mut self, uploader_mid: Option<i64>) -> Self {
@@ -148,17 +157,25 @@ impl VideoCard {
             Style::default().fg(theme.fg_secondary)
         };
 
+        let mut meta = vec![
+            Span::styled(&self.views, Style::default().fg(theme.fg_muted)),
+            Span::styled(" · ", Style::default().fg(theme.fg_muted)),
+            Span::styled(&self.duration, Style::default().fg(theme.success)),
+        ];
+        if let Some(pubdate) = &self.pubdate {
+            meta.push(Span::styled(" · ", Style::default().fg(theme.fg_muted)));
+            meta.push(Span::styled(
+                pubdate.clone(),
+                Style::default().fg(theme.fg_secondary),
+            ));
+        }
         let info_text = Text::from(vec![
             Line::from(Span::styled(&display_title, title_style)),
             Line::from(Span::styled(
                 &self.author,
                 Style::default().fg(theme.bilibili_cyan),
             )),
-            Line::from(vec![
-                Span::styled(&self.views, Style::default().fg(theme.fg_muted)),
-                Span::styled(" · ", Style::default().fg(theme.fg_muted)),
-                Span::styled(&self.duration, Style::default().fg(theme.success)),
-            ]),
+            Line::from(meta),
         ]);
 
         let info = Paragraph::new(info_text)
@@ -194,6 +211,10 @@ impl VideoCard {
         } else {
             Style::default().fg(theme.fg_secondary)
         };
+        let meta = match &self.pubdate {
+            Some(pubdate) => format!("▶ {}   {}   {}", self.views, self.duration, pubdate),
+            None => format!("▶ {}   {}", self.views, self.duration),
+        };
         frame.render_widget(
             Paragraph::new(vec![
                 Line::styled(self.title.clone(), style),
@@ -201,10 +222,7 @@ impl VideoCard {
                     self.author.clone(),
                     Style::default().fg(theme.bilibili_cyan),
                 ),
-                Line::styled(
-                    format!("▶ {}   {}", self.views, self.duration),
-                    Style::default().fg(theme.fg_muted),
-                ),
+                Line::styled(meta, Style::default().fg(theme.fg_muted)),
             ])
             .wrap(Wrap { trim: true }),
             chunks[1],

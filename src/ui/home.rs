@@ -1,6 +1,6 @@
 //! Homepage with video recommendations in a grid layout with cover images
 
-use super::{Component, SearchPage, Theme, shortcut_footer};
+use super::{Component, SearchPage, Theme, format_pubdate, shortcut_footer};
 use crate::api::client::ApiClient;
 use crate::api::recommend::HomeFeed;
 use crate::api::recommend::VideoItem;
@@ -929,12 +929,18 @@ impl HomePage {
             .and_then(|stat| stat.reply)
             .map(format_count)
             .unwrap_or_else(|| "-".to_string());
+        let pubdate = card
+            .video
+            .pubdate
+            .map(format_pubdate)
+            .unwrap_or_else(|| "-".to_string());
         let info_text = Text::from(vec![
             Line::from(Span::styled(&display_title, title_style)),
             Line::from(vec![
                 Span::styled("UP  ", meta_style),
                 Span::styled(author, Style::default().fg(theme.bilibili_cyan)),
                 Span::styled(format!("  ·  {follower} 关注"), meta_style),
+                Span::styled(format!("  ·  {pubdate}"), meta_style),
             ]),
             Line::from(vec![
                 Span::styled(format!("▶ {views}"), meta_style),

@@ -52,6 +52,8 @@ pub struct RelatedVideoItem {
     pub title: Option<String>,
     pub pic: Option<String>,
     pub duration: Option<i64>,
+    #[serde(default)]
+    pub pubdate: Option<i64>,
     pub owner: Option<RelatedVideoOwner>,
     pub stat: Option<RelatedVideoStat>,
 }

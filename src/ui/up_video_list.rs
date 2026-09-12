@@ -1,5 +1,5 @@
 use super::video_card::{VideoCard, VideoCardGrid};
-use super::{Component, Theme};
+use super::{Component, Theme, format_pubdate};
 use crate::api::video::UpVideoItem;
 use crate::application::AppAction;
 use crate::storage::Keybindings;
@@ -76,7 +76,8 @@ impl UpVideoListPage {
                 v.format_views(),
                 v.format_duration(),
                 Some(v.cover_url()),
-            );
+            )
+            .with_pubdate(Some(format_pubdate(v.created)));
             self.grid.add_card(card);
         }
     }
@@ -95,7 +96,8 @@ impl UpVideoListPage {
                 v.format_views(),
                 v.format_duration(),
                 Some(v.cover_url()),
-            );
+            )
+            .with_pubdate(Some(format_pubdate(v.created)));
             self.grid.add_card(card);
         }
     }

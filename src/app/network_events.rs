@@ -1,7 +1,7 @@
 use crate::api::search::SearchType;
 use crate::app::App;
 use crate::application::network;
-use crate::presentation::tui::{Page, VideoCard};
+use crate::presentation::tui::{Page, VideoCard, format_pubdate};
 
 impl App {
     pub(super) fn drain_network_events(&mut self) {
@@ -244,7 +244,8 @@ impl App {
                             video.format_duration(),
                             video.cover_url(),
                         )
-                        .with_uploader_mid(video.owner.as_ref().and_then(|owner| owner.mid));
+                        .with_uploader_mid(video.owner.as_ref().and_then(|owner| owner.mid))
+                        .with_pubdate(video.pubdate.map(format_pubdate));
                         page.related_card_grid.add_card(card);
                     }
                     page.loading = false;
