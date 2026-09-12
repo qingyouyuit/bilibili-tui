@@ -4,7 +4,7 @@
 
 ![Rust](https://img.shields.io/badge/Rust-stable-orange)
 ![License](https://img.shields.io/badge/License-MIT-blue)
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/maredevi/bilibili-tui?label=version&color=green)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/qingyouyuit/bilibili-tui?label=version&color=green)
 
 一个基于终端用户界面（TUI）的 Bilibili 客户端，使用 Rust 构建，提供轻量级且高效的 Bilibili 浏览体验。
 
@@ -215,7 +215,7 @@ brew install maredevi/tap/bilibili-tui
 
 ```bash
 # 克隆仓库
-git clone https://github.com/maredevi/bilibili-tui.git
+git clone https://github.com/qingyouyuit/bilibili-tui.git
 cd bilibili-tui
 
 # 构建发布版本
@@ -229,7 +229,7 @@ cargo build --release
 
 ```bash
 # 从 git 仓库克隆并构建
-git clone https://github.com/maredevi/bilibili-tui.git
+git clone https://github.com/qingyouyuit/bilibili-tui.git
 cd bilibili-tui
 cargo install --path .
 ```
@@ -244,7 +244,7 @@ cargo install --path .
 # Linux: 参考官方文档 https://mise.jdx.dev/
 
 # 克隆仓库
-git clone https://github.com/maredevi/bilibili-tui.git
+git clone https://github.com/qingyouyuit/bilibili-tui.git
 cd bilibili-tui
 
 # 安装项目依赖
@@ -261,7 +261,7 @@ mise exec cargo run
 
 ```bash
 # 克隆仓库
-git clone https://github.com/maredevi/bilibili-tui.git
+git clone https://github.com/qingyouyuit/bilibili-tui.git
 cd bilibili-tui
 
 # 进入开发环境 / 安装依赖
@@ -472,7 +472,7 @@ main.rs → App::run() → 事件循环 → UI 组件 → AppActions → App::ha
 #### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/maredevi/bilibili-tui.git
+git clone https://github.com/qingyouyuit/bilibili-tui.git
 cd bilibili-tui
 ```
 
@@ -595,9 +595,10 @@ MIT License
 
 ## 📞 联系方式
 
-- 项目主页: [GitHub Repository](https://github.com/maredevi/bilibili-tui)
-- 问题反馈: [GitHub Issues](https://github.com/maredevi/bilibili-tui/issues)
-- 功能请求: [GitHub Discussions](https://github.com/maredevi/bilibili-tui/discussions)
+- 项目主页: [GitHub Repository](https://github.com/qingyouyuit/bilibili-tui)
+- 问题反馈: [GitHub Issues](https://github.com/qingyouyuit/bilibili-tui/issues)
+- 功能请求: [GitHub Discussions](https://github.com/qingyouyuit/bilibili-tui/discussions)
+- 邮箱: [19863628661@163.com](mailto:19863628661@163.com)
 
 ---
 
@@ -605,6 +606,6 @@ MIT License
 
 **🌟 如果这个项目对你有帮助，请给个 Star 支持！**
 
-Made with ❤️ by MareDevi
+Made with ❤️ by qingyouyu
 
 </div>
