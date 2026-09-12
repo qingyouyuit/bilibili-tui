@@ -829,6 +829,7 @@ impl ApiClient {
         &self,
         keyword: &str,
         page: i32,
+        order: &str,
     ) -> Result<super::search::SearchData> {
         let url = self.build_url(BilibiliApiDomain::Main, "/x/web-interface/wbi/search/type");
 
@@ -836,7 +837,7 @@ impl ApiClient {
             ("search_type", "video".to_string()),
             ("keyword", keyword.to_string()),
             ("page", page.to_string()),
-            ("order", "totalrank".to_string()),
+            ("order", order.to_string()),
         ];
 
         let resp: ApiResponse<super::search::SearchData> = self.get_with_wbi(&url, params).await?;
@@ -854,6 +855,7 @@ impl ApiClient {
         keyword: &str,
         page: i32,
         search_type: &str,
+        order: &str,
     ) -> Result<serde_json::Value> {
         let url = self.build_url(BilibiliApiDomain::Main, "/x/web-interface/wbi/search/type");
 
@@ -861,6 +863,7 @@ impl ApiClient {
             ("search_type", search_type.to_string()),
             ("keyword", keyword.to_string()),
             ("page", page.to_string()),
+            ("order", order.to_string()),
         ];
 
         let resp: ApiResponse<serde_json::Value> = self.get_with_wbi(&url, params).await?;

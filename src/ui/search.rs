@@ -3,7 +3,7 @@
 use super::video_card::{VideoCard, VideoCardGrid};
 use super::{Component, Theme, format_pubdate, shortcut_footer};
 use crate::api::client::ApiClient;
-use crate::api::search::{HotwordItem, SearchType, SearchVideoItem};
+use crate::api::search::{HotwordItem, SearchOrder, SearchType, SearchVideoItem};
 use crate::application::AppAction;
 use crate::storage::Keybindings;
 use ratatui::{
@@ -42,6 +42,7 @@ pub struct SearchPage {
     pub total_results: i32,
     pub loading_more: bool,
     pub search_type: SearchType,
+    pub order: SearchOrder,
     pub card_actions: Vec<AppAction>,
     last_click_time: Option<Instant>,
     last_click_index: Option<usize>,
@@ -64,6 +65,7 @@ impl SearchPage {
             total_results: 0,
             loading_more: false,
             search_type: SearchType::Video,
+            order: SearchOrder::Totalrank,
             card_actions: Vec::new(),
             last_click_time: None,
             last_click_index: None,
@@ -80,6 +82,22 @@ impl SearchPage {
             self.page = 1;
             self.total_results = 0;
         }
+    }
+
+    /// Set the result sort order. Returns true when the change requires a
+    /// fresh search (there is an active query).
+    pub fn switch_order(&mut self, order: SearchOrder) -> bool {
+        if self.order == order {
+            return false;
+        }
+        self.order = order;
+        self.grid.clear();
+        self.card_actions.clear();
+        self.loading = true;
+        self.error_message = None;
+        self.page = 1;
+        self.total_results = 0;
+        !self.query.is_empty() && !self.show_hot_list
     }
 
     pub fn set_results(&mut self, results: Vec<SearchVideoItem>, total: i32) {
@@ -482,7 +500,12 @@ impl SearchPage {
 
         let st = self.search_type;
         match api_client
-            .search(&self.query, self.page, st.api_value())
+            .search(
+                &self.query,
+                self.page,
+                st.api_value(),
+                self.order.api_value(),
+            )
             .await
         {
             Ok(data) => {
@@ -726,19 +749,26 @@ impl Component for SearchPage {
             );
             frame.render_widget(empty, content_area);
         } else {
-            let header = Paragraph::new(Line::from(vec![
+            let mut header_spans = vec![
                 Span::styled(" 搜索结果 ", Style::default().fg(theme.bilibili_pink)),
                 Span::styled(
                     format!("({}/{})", self.grid.cards.len(), self.total_results),
                     Style::default().fg(theme.fg_muted),
                 ),
-                if self.loading_more {
-                    Span::styled(" 加载中...", Style::default().fg(theme.warning))
-                } else {
-                    Span::raw("")
-                },
-            ]))
-            .block(
+            ];
+            if self.search_type == SearchType::Video {
+                header_spans.push(Span::styled(
+                    format!("  排序: {}", self.order.label()),
+                    Style::default().fg(theme.fg_accent),
+                ));
+            }
+            if self.loading_more {
+                header_spans.push(Span::styled(
+                    " 加载中...",
+                    Style::default().fg(theme.warning),
+                ));
+            }
+            let header = Paragraph::new(Line::from(header_spans)).block(
                 Block::default()
                     .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
                     .border_type(BorderType::Rounded)
@@ -790,6 +820,7 @@ impl Component for SearchPage {
                     (keys.confirm.clone(), "详情".into(), theme.success),
                     (keys.search_focus.clone(), "搜索".into(), theme.info),
                     ("1-8".into(), "切换类型".into(), theme.fg_accent),
+                    (keys.search_order.clone(), "排序".into(), theme.fg_accent),
                 ],
             )
         };
@@ -945,6 +976,9 @@ impl Component for SearchPage {
                         return Some(AppAction::SwitchSearchType(new_type));
                     }
                 }
+            }
+            if keys.matches_search_order(key) {
+                return Some(AppAction::SwitchSearchOrder(self.order.cycle(1)));
             }
             if keys.matches_search_focus(key) {
                 self.input_mode = true;

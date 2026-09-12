@@ -105,6 +105,8 @@ pub struct Keybindings {
     pub play: String,
     pub open_settings: String,
     pub search_focus: String,
+    /// Cycle the search result sort order.
+    pub search_order: String,
 
     // Comments
     pub comment: String,
@@ -149,6 +151,7 @@ impl Default for Keybindings {
             play: "p".to_string(),
             open_settings: "s".to_string(),
             search_focus: "/".to_string(),
+            search_order: "o".to_string(),
 
             // Comments
             comment: "c".to_string(),
@@ -311,6 +314,10 @@ impl Keybindings {
         self.matches(&self.search_focus, key) || key == KeyCode::Char('i')
     }
 
+    pub fn matches_search_order(&self, key: KeyCode) -> bool {
+        self.matches(&self.search_order, key)
+    }
+
     pub fn matches_section_prev(&self, key: KeyCode) -> bool {
         self.matches(&self.section_prev, key)
     }
@@ -398,6 +405,8 @@ impl Keybindings {
             ("下一UP", &self.up_next),
             // Open UP主 page
             ("查看UP主", &self.open_up),
+            // Search sort order
+            ("搜索排序", &self.search_order),
         ]
     }
 
@@ -437,6 +446,8 @@ impl Keybindings {
             24 => self.up_next = new_key,
             // Open UP主 page
             25 => self.open_up = new_key,
+            // Search sort order
+            26 => self.search_order = new_key,
             _ => {}
         }
     }

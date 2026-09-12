@@ -1,4 +1,4 @@
-use crate::api::search::SearchType;
+use crate::api::search::{SearchOrder, SearchType};
 use crate::app::{App, PreviousPage};
 use crate::application::{AppAction, network};
 use crate::infrastructure::{media, persistence};
@@ -259,6 +259,7 @@ impl App {
             AppAction::Search(keyword) => {
                 let mut start_search = false;
                 let mut search_type = SearchType::Video;
+                let mut order = SearchOrder::Totalrank;
                 match &mut self.current_page {
                     Page::Home(home) => {
                         let page = home.search_mut();
@@ -267,6 +268,7 @@ impl App {
                         page.loading = true;
                         page.show_hot_list = false;
                         search_type = page.search_type;
+                        order = page.order;
                         start_search = true;
                     }
                     Page::Search(page) => {
@@ -275,6 +277,7 @@ impl App {
                         page.loading = true;
                         page.show_hot_list = false;
                         search_type = page.search_type;
+                        order = page.order;
                         start_search = true;
                     }
                     _ => {}
@@ -286,6 +289,7 @@ impl App {
                             req_id,
                             keyword,
                             page: 1,
+                            order,
                         });
                     } else {
                         self.send_network_command(network::NetworkCommand::SearchWithType {
@@ -293,6 +297,7 @@ impl App {
                             keyword,
                             page: 1,
                             search_type,
+                            order,
                         });
                     }
                 }
@@ -303,12 +308,14 @@ impl App {
                     page.page = 1;
                     page.loading = true;
                     page.show_hot_list = false;
+                    let order = page.order;
                     let req_id = self.next_request_id("search");
                     self.send_network_command(network::NetworkCommand::SearchWithType {
                         req_id,
                         keyword,
                         page: 1,
                         search_type: st,
+                        order,
                     });
                 }
             }
@@ -319,13 +326,63 @@ impl App {
                     page.switch_type(st);
                     if !page.query.is_empty() {
                         let keyword = page.query.clone();
+                        let order = page.order;
                         let req_id = self.next_request_id("search");
                         self.send_network_command(network::NetworkCommand::SearchWithType {
                             req_id,
                             keyword,
                             page: 1,
                             search_type: st,
+                            order,
                         });
+                    }
+                }
+            }
+            AppAction::SwitchSearchOrder(order) => {
+                if let Page::Search(page) = &mut self.current_page {
+                    if page.switch_order(order) {
+                        let keyword = page.query.clone();
+                        let search_type = page.search_type;
+                        let req_id = self.next_request_id("search");
+                        if search_type == SearchType::Video {
+                            self.send_network_command(network::NetworkCommand::Search {
+                                req_id,
+                                keyword,
+                                page: 1,
+                                order,
+                            });
+                        } else {
+                            self.send_network_command(network::NetworkCommand::SearchWithType {
+                                req_id,
+                                keyword,
+                                page: 1,
+                                search_type,
+                                order,
+                            });
+                        }
+                    }
+                } else if let Page::Home(home) = &mut self.current_page {
+                    let page = home.search_mut();
+                    if page.switch_order(order) {
+                        let keyword = page.query.clone();
+                        let search_type = page.search_type;
+                        let req_id = self.next_request_id("search");
+                        if search_type == SearchType::Video {
+                            self.send_network_command(network::NetworkCommand::Search {
+                                req_id,
+                                keyword,
+                                page: 1,
+                                order,
+                            });
+                        } else {
+                            self.send_network_command(network::NetworkCommand::SearchWithType {
+                                req_id,
+                                keyword,
+                                page: 1,
+                                search_type,
+                                order,
+                            });
+                        }
                     }
                 }
             }
@@ -640,7 +697,12 @@ impl App {
                             return;
                         }
                         page.loading_more = true;
-                        command = Some((page.query.clone(), page.page + 1, page.search_type));
+                        command = Some((
+                            page.query.clone(),
+                            page.page + 1,
+                            page.search_type,
+                            page.order,
+                        ));
                     }
                     Page::Search(page) => {
                         if page.loading_more || page.query.is_empty() || page.show_hot_list {
@@ -650,17 +712,23 @@ impl App {
                             return;
                         }
                         page.loading_more = true;
-                        command = Some((page.query.clone(), page.page + 1, page.search_type));
+                        command = Some((
+                            page.query.clone(),
+                            page.page + 1,
+                            page.search_type,
+                            page.order,
+                        ));
                     }
                     _ => {}
                 }
-                if let Some((keyword, next_page, search_type)) = command {
+                if let Some((keyword, next_page, search_type, order)) = command {
                     let req_id = self.next_request_id("search");
                     if search_type == SearchType::Video {
                         self.send_network_command(network::NetworkCommand::Search {
                             req_id,
                             keyword,
                             page: next_page,
+                            order,
                         });
                     } else {
                         self.send_network_command(network::NetworkCommand::SearchWithType {
@@ -668,6 +736,7 @@ impl App {
                             keyword,
                             page: next_page,
                             search_type,
+                            order,
                         });
                     }
                 }

@@ -1,7 +1,7 @@
 use crate::api::favorite::{FavoriteOrder, FavoriteSource};
 use crate::api::history::HistoryKey;
 use crate::api::recommend::HomeFeed;
-use crate::api::search::SearchType;
+use crate::api::search::{SearchOrder, SearchType};
 use crate::api::space::SpaceVideoOrder;
 use crate::api::video::VideoPage;
 use crate::domain::playback::{PlayOrder, PlaylistItem, PlaylistSource};
@@ -67,6 +67,8 @@ pub enum AppAction {
     Search(String),
     /// Switch search type
     SwitchSearchType(SearchType),
+    /// Switch search result sort order
+    SwitchSearchOrder(SearchOrder),
     /// Refresh dynamic feed
     RefreshDynamic,
     /// Open video detail page (bvid, aid)

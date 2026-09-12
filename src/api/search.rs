@@ -56,6 +56,68 @@ impl SearchType {
     }
 }
 
+/// Sort order for search results (maps to the API's `order` parameter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchOrder {
+    /// Comprehensive ranking (default).
+    Totalrank,
+    /// Most played.
+    Click,
+    /// Newest published.
+    Pubdate,
+    /// Most danmaku.
+    Danmaku,
+    /// Most favorited.
+    Stow,
+    /// Most comments.
+    Scores,
+}
+
+impl SearchOrder {
+    pub const ALL: [Self; 6] = [
+        Self::Totalrank,
+        Self::Click,
+        Self::Pubdate,
+        Self::Danmaku,
+        Self::Stow,
+        Self::Scores,
+    ];
+
+    pub fn api_value(self) -> &'static str {
+        match self {
+            Self::Totalrank => "totalrank",
+            Self::Click => "click",
+            Self::Pubdate => "pubdate",
+            Self::Danmaku => "dm",
+            Self::Stow => "stow",
+            Self::Scores => "scores",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Totalrank => "综合",
+            Self::Click => "播放",
+            Self::Pubdate => "最新",
+            Self::Danmaku => "弹幕",
+            Self::Stow => "收藏",
+            Self::Scores => "评论",
+        }
+    }
+
+    pub fn cycle(self, direction: i32) -> Self {
+        let index = Self::ALL
+            .iter()
+            .position(|order| *order == self)
+            .unwrap_or(0);
+        if direction >= 0 {
+            Self::ALL[(index + 1) % Self::ALL.len()]
+        } else {
+            Self::ALL[(index + Self::ALL.len() - 1) % Self::ALL.len()]
+        }
+    }
+}
+
 /// Search result for video type
 #[derive(Debug, Deserialize)]
 pub struct SearchData {
@@ -164,4 +226,31 @@ pub struct HotwordResponse {
     pub code: Option<i32>,
     pub message: Option<String>,
     pub list: Option<Vec<HotwordItem>>, // Top 10 hot words
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SearchOrder;
+
+    #[test]
+    fn search_order_maps_to_api_values() {
+        assert_eq!(SearchOrder::Totalrank.api_value(), "totalrank");
+        assert_eq!(SearchOrder::Click.api_value(), "click");
+        assert_eq!(SearchOrder::Pubdate.api_value(), "pubdate");
+        assert_eq!(SearchOrder::Danmaku.api_value(), "dm");
+        assert_eq!(SearchOrder::Stow.api_value(), "stow");
+        assert_eq!(SearchOrder::Scores.api_value(), "scores");
+    }
+
+    #[test]
+    fn search_order_cycles_wrap_around() {
+        assert_eq!(SearchOrder::Totalrank.cycle(1), SearchOrder::Click);
+        assert_eq!(SearchOrder::Totalrank.cycle(-1), SearchOrder::Scores);
+
+        let mut order = SearchOrder::Totalrank;
+        for _ in 0..SearchOrder::ALL.len() {
+            order = order.cycle(1);
+        }
+        assert_eq!(order, SearchOrder::Totalrank);
+    }
 }

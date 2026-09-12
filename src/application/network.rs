@@ -1,4 +1,4 @@
-use crate::api::search::SearchType;
+use crate::api::search::{SearchOrder, SearchType};
 use crate::api::{
     ApiClient,
     article::ArticleData,
@@ -47,12 +47,14 @@ pub enum NetworkCommand {
         req_id: u64,
         keyword: String,
         page: i32,
+        order: SearchOrder,
     },
     SearchWithType {
         req_id: u64,
         keyword: String,
         page: i32,
         search_type: SearchType,
+        order: SearchOrder,
     },
     LoadDynamicInit {
         req_id: u64,
@@ -456,7 +458,11 @@ async fn handle_command(api_client: Arc<ApiClient>, command: NetworkCommand) -> 
             req_id,
             keyword,
             page,
-        } => match api_client.search_videos(&keyword, page).await {
+            order,
+        } => match api_client
+            .search_videos(&keyword, page, order.api_value())
+            .await
+        {
             Ok(data) => NetworkEvent::SearchLoaded {
                 req_id,
                 keyword,
@@ -471,8 +477,9 @@ async fn handle_command(api_client: Arc<ApiClient>, command: NetworkCommand) -> 
             keyword,
             page,
             search_type,
+            order,
         } => match api_client
-            .search(&keyword, page, search_type.api_value())
+            .search(&keyword, page, search_type.api_value(), order.api_value())
             .await
         {
             Ok(data) => NetworkEvent::SearchWithTypeLoaded {
