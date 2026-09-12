@@ -11,10 +11,11 @@ mod search;
 mod settings;
 mod sidebar;
 pub mod theme;
+mod up_video_list;
 mod video_card;
 mod video_detail;
 
-pub use bangumi::BangumiPage;
+pub use bangumi::{BangumiPage, BangumiTab};
 pub use bangumi_detail::BangumiDetailPage;
 pub use dynamic::{DynamicPage, DynamicTab};
 pub use dynamic_detail::DynamicDetailPage;
@@ -27,6 +28,7 @@ pub use search::SearchPage;
 pub use settings::SettingsPage;
 pub use sidebar::{NavItem, Sidebar};
 pub use theme::{DEFAULT_THEME_ID, Theme, ThemeChoice};
+pub use up_video_list::UpVideoListPage;
 pub use video_card::{VideoCard, VideoCardGrid};
 pub use video_detail::VideoDetailPage;
 
@@ -74,4 +76,5 @@ pub enum Page {
     Settings(Box<SettingsPage>),
     Bangumi(Box<BangumiPage>),
     BangumiDetail(Box<BangumiDetailPage>),
+    UpVideoList(Box<UpVideoListPage>),
 }

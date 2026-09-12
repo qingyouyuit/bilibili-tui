@@ -1,9 +1,11 @@
+use crate::api::search::SearchType;
 use crate::app::{App, PreviousPage};
 use crate::application::{AppAction, network};
 use crate::infrastructure::{media, persistence};
 use crate::presentation::tui::{
     BangumiDetailPage, BangumiPage, DynamicDetailPage, DynamicPage, HistoryPage, HomePage,
     LiveDetailPage, LivePage, LoginPage, NavItem, Page, SearchPage, SettingsPage, Theme,
+    UpVideoListPage,
 };
 
 impl App {
@@ -27,6 +29,10 @@ impl App {
                 page.error_message = Some(msg);
                 page.loading = false;
             }
+            Page::UpVideoList(page) => {
+                page.error_message = Some(msg);
+                page.loading = false;
+            }
             _ => {}
         }
     }
@@ -40,8 +46,27 @@ impl App {
             Page::History(_) => Some(PreviousPage::History),
             Page::Live(_) => Some(PreviousPage::Live),
             Page::Bangumi(_) => Some(PreviousPage::Bangumi),
+            Page::VideoDetail(page) => Some(PreviousPage::VideoDetail {
+                bvid: page.bvid.clone(),
+                aid: page.aid,
+            }),
             _ => None,
         };
+    }
+
+    /// 缓存当前列表页状态，以便返回时保留查询结果/滚动位置
+    fn cache_current_page(&mut self) {
+        let placeholder = Page::Home(HomePage::new());
+        let old = std::mem::replace(&mut self.current_page, placeholder);
+        match old {
+            Page::Home(page) => self.cached_home = Some(page),
+            Page::Search(page) => self.cached_search = Some(page),
+            Page::Dynamic(page) => self.cached_dynamic = Some(page),
+            Page::History(page) => self.cached_history = Some(page),
+            Page::Bangumi(page) => self.cached_bangumi = Some(*page),
+            // 其他页面无法缓存，原样放回
+            other => self.current_page = other,
+        }
     }
 
     pub(super) async fn handle_action(&mut self, action: AppAction) {
@@ -146,12 +171,54 @@ impl App {
                     page.page = 1;
                     page.loading = true;
                     page.show_hot_list = false;
+                    let search_type = page.search_type;
                     let req_id = self.next_request_id("search");
-                    self.send_network_command(network::NetworkCommand::Search {
+                    if search_type == SearchType::Video {
+                        self.send_network_command(network::NetworkCommand::Search {
+                            req_id,
+                            keyword,
+                            page: 1,
+                        });
+                    } else {
+                        self.send_network_command(network::NetworkCommand::SearchWithType {
+                            req_id,
+                            keyword,
+                            page: 1,
+                            search_type,
+                        });
+                    }
+                }
+            }
+            AppAction::SearchWithType(keyword, st) => {
+                if let Page::Search(page) = &mut self.current_page {
+                    page.query = keyword.clone();
+                    page.page = 1;
+                    page.loading = true;
+                    page.show_hot_list = false;
+                    let req_id = self.next_request_id("search");
+                    self.send_network_command(network::NetworkCommand::SearchWithType {
                         req_id,
                         keyword,
                         page: 1,
+                        search_type: st,
                     });
+                }
+            }
+            AppAction::SwitchSearchType(st) => {
+                if let Page::Search(page) = &mut self.current_page {
+                    if page.search_type != st {
+                        page.switch_type(st);
+                        if !page.query.is_empty() {
+                            let keyword = page.query.clone();
+                            let req_id = self.next_request_id("search");
+                            self.send_network_command(network::NetworkCommand::SearchWithType {
+                                req_id,
+                                keyword,
+                                page: 1,
+                                search_type: st,
+                            });
+                        }
+                    }
                 }
             }
             AppAction::RefreshDynamic => {
@@ -173,12 +240,8 @@ impl App {
             }
             AppAction::OpenVideoDetail(bvid, aid) => {
                 self.save_previous_page();
-                // Cache home page before navigating to video detail
-                if let Page::Home(home_page) =
-                    std::mem::replace(&mut self.current_page, Page::Home(HomePage::new()))
-                {
-                    self.cached_home = Some(home_page);
-                }
+                // Cache current list page before navigating to video detail
+                self.cache_current_page();
                 let detail_page = crate::presentation::tui::VideoDetailPage::new(bvid.clone(), aid);
                 self.current_page = Page::VideoDetail(Box::new(detail_page));
                 let req_id = self.next_request_id("video_detail");
@@ -190,12 +253,8 @@ impl App {
             }
             AppAction::OpenDynamicDetail(dynamic_id) => {
                 self.save_previous_page();
-                // Cache home page before navigating to dynamic detail
-                if let Page::Home(home_page) =
-                    std::mem::replace(&mut self.current_page, Page::Home(HomePage::new()))
-                {
-                    self.cached_home = Some(home_page);
-                }
+                // Cache current list page before navigating to dynamic detail
+                self.cache_current_page();
                 let detail_page = DynamicDetailPage::new(dynamic_id.clone());
                 self.current_page = Page::DynamicDetail(Box::new(detail_page));
                 let req_id = self.next_request_id("dynamic_detail");
@@ -217,18 +276,30 @@ impl App {
                 }
                 Some(PreviousPage::Search) => {
                     self.sidebar.select(NavItem::Search);
-                    self.current_page = Page::Search(SearchPage::new());
-                    self.init_current_page().await;
+                    if let Some(cached) = self.cached_search.take() {
+                        self.current_page = Page::Search(cached);
+                    } else {
+                        self.current_page = Page::Search(SearchPage::new());
+                        self.init_current_page().await;
+                    }
                 }
                 Some(PreviousPage::Dynamic) => {
                     self.sidebar.select(NavItem::Dynamic);
-                    self.current_page = Page::Dynamic(DynamicPage::new());
-                    self.init_current_page().await;
+                    if let Some(cached) = self.cached_dynamic.take() {
+                        self.current_page = Page::Dynamic(cached);
+                    } else {
+                        self.current_page = Page::Dynamic(DynamicPage::new());
+                        self.init_current_page().await;
+                    }
                 }
                 Some(PreviousPage::History) => {
                     self.sidebar.select(NavItem::History);
-                    self.current_page = Page::History(HistoryPage::new());
-                    self.init_current_page().await;
+                    if let Some(cached) = self.cached_history.take() {
+                        self.current_page = Page::History(cached);
+                    } else {
+                        self.current_page = Page::History(HistoryPage::new());
+                        self.init_current_page().await;
+                    }
                 }
                 Some(PreviousPage::Live) => {
                     self.sidebar.select(NavItem::Live);
@@ -243,6 +314,16 @@ impl App {
                         self.current_page = Page::Bangumi(Box::<BangumiPage>::default());
                         self.init_current_page().await;
                     }
+                }
+                Some(PreviousPage::VideoDetail { bvid, aid }) => {
+                    let detail_page = crate::presentation::tui::VideoDetailPage::new(bvid.clone(), aid);
+                    self.current_page = Page::VideoDetail(Box::new(detail_page));
+                    let req_id = self.next_request_id("video_detail");
+                    self.send_network_command(network::NetworkCommand::LoadVideoDetail {
+                        req_id,
+                        bvid,
+                        aid,
+                    });
                 }
                 None => {
                     // Default to home
@@ -278,15 +359,25 @@ impl App {
                     }
                     page.loading_more = true;
                     let next_page = page.page + 1;
-                    command = Some((page.query.clone(), next_page));
+                    let search_type = page.search_type;
+                    command = Some((page.query.clone(), next_page, search_type));
                 }
-                if let Some((keyword, next_page)) = command {
+                if let Some((keyword, next_page, search_type)) = command {
                     let req_id = self.next_request_id("search");
-                    self.send_network_command(network::NetworkCommand::Search {
-                        req_id,
-                        keyword,
-                        page: next_page,
-                    });
+                    if search_type == SearchType::Video {
+                        self.send_network_command(network::NetworkCommand::Search {
+                            req_id,
+                            keyword,
+                            page: next_page,
+                        });
+                    } else {
+                        self.send_network_command(network::NetworkCommand::SearchWithType {
+                            req_id,
+                            keyword,
+                            page: next_page,
+                            search_type,
+                        });
+                    }
                 }
             }
             AppAction::LoadMoreDynamic => {
@@ -534,8 +625,16 @@ impl App {
                 self.current_page = Page::Bangumi(Box::<BangumiPage>::default());
                 self.init_current_page().await;
             }
-            AppAction::SwitchBangumiTab(_tab) => {
-                // Single tab mode, no-op
+            AppAction::SwitchBangumiTab(tab) => {
+                if let Page::Bangumi(page) = &mut self.current_page {
+                    page.switch_tab(tab);
+                    let season_type = tab.season_type();
+                    let req_id = self.next_request_id("bangumi_index");
+                    self.send_network_command(network::NetworkCommand::LoadBangumiIndex {
+                        req_id,
+                        season_type,
+                    });
+                }
             }
             AppAction::OpenBangumiDetail(season_id) => {
                 self.save_previous_page();
@@ -563,74 +662,110 @@ impl App {
             } => {
                 let _ = media::play_bangumi_episode(ep_id, self.credentials.as_ref()).await;
             }
+            AppAction::OpenUpVideoList { mid, name } => {
+                self.save_previous_page();
+                self.cache_current_page();
+                let page = UpVideoListPage::new(mid, name.clone());
+                self.current_page = Page::UpVideoList(Box::new(page));
+                let req_id = self.next_request_id("up_videos");
+                self.send_network_command(network::NetworkCommand::LoadUpVideos {
+                    req_id,
+                    mid,
+                    page: 1,
+                });
+            }
+            AppAction::LoadMoreUpVideos => {
+                let mut command = None;
+                if let Page::UpVideoList(page) = &mut self.current_page
+                    && page.begin_load_more()
+                {
+                    let mid = page.mid;
+                    let next_page = page.page + 1;
+                    command = Some((mid, next_page));
+                }
+                if let Some((mid, next_page)) = command {
+                    let req_id = self.next_request_id("up_videos");
+                    self.send_network_command(network::NetworkCommand::LoadUpVideos {
+                        req_id,
+                        mid,
+                        page: next_page,
+                    });
+                }
+            }
             AppAction::None => {}
         }
     }
 
     async fn switch_to_nav_page(&mut self) {
-        // First, cache home page if we're leaving it
-        if matches!(self.current_page, Page::Home(_))
-            && self.sidebar.selected != NavItem::Home
-            && let Page::Home(home_page) =
-                std::mem::replace(&mut self.current_page, Page::Home(HomePage::new()))
-        {
-            self.cached_home = Some(home_page);
+        // Already on the target page type: keep the current state untouched
+        let already_there = matches!(
+            (&self.current_page, self.sidebar.selected),
+            (Page::Home(_), NavItem::Home)
+                | (Page::Search(_), NavItem::Search)
+                | (Page::Dynamic(_), NavItem::Dynamic)
+                | (Page::History(_), NavItem::History)
+                | (Page::Live(_), NavItem::Live)
+                | (Page::Bangumi(_), NavItem::Bangumi)
+                | (Page::Settings(_), NavItem::Settings)
+        );
+        if already_there {
+            return;
         }
+
+        // Cache the page we're leaving (if cacheable) to preserve its state
+        self.cache_current_page();
 
         match self.sidebar.selected {
             NavItem::Home => {
-                if !matches!(self.current_page, Page::Home(_)) {
-                    // Use cached home page if available
-                    if let Some(cached) = self.cached_home.take() {
-                        self.current_page = Page::Home(cached);
-                    } else {
-                        self.current_page = Page::Home(HomePage::new());
-                        self.init_current_page().await;
-                    }
+                if let Some(cached) = self.cached_home.take() {
+                    self.current_page = Page::Home(cached);
+                } else {
+                    self.current_page = Page::Home(HomePage::new());
+                    self.init_current_page().await;
                 }
             }
             NavItem::Search => {
-                if !matches!(self.current_page, Page::Search(_)) {
+                if let Some(cached) = self.cached_search.take() {
+                    self.current_page = Page::Search(cached);
+                } else {
                     self.current_page = Page::Search(SearchPage::new());
                     self.init_current_page().await;
                 }
             }
             NavItem::Dynamic => {
-                if !matches!(self.current_page, Page::Dynamic(_)) {
+                if let Some(cached) = self.cached_dynamic.take() {
+                    self.current_page = Page::Dynamic(cached);
+                } else {
                     self.current_page = Page::Dynamic(DynamicPage::new());
                     self.init_current_page().await;
                 }
             }
             NavItem::History => {
-                if !matches!(self.current_page, Page::History(_)) {
+                if let Some(cached) = self.cached_history.take() {
+                    self.current_page = Page::History(cached);
+                } else {
                     self.current_page = Page::History(HistoryPage::new());
                     self.init_current_page().await;
                 }
             }
             NavItem::Settings => {
-                if !matches!(self.current_page, Page::Settings(_)) {
-                    let page = SettingsPage::new(
-                        self.keybindings.clone(),
-                        self.theme_id.clone(),
-                        self.credentials.is_some(),
-                    );
-                    self.current_page = Page::Settings(Box::new(page));
-                }
+                let page = SettingsPage::new(
+                    self.keybindings.clone(),
+                    self.theme_id.clone(),
+                    self.credentials.is_some(),
+                );
+                self.current_page = Page::Settings(Box::new(page));
             }
             NavItem::Live => {
-                if !matches!(self.current_page, Page::Live(_)) {
-                    self.current_page = Page::Live(LivePage::new());
-                    self.init_current_page().await;
-                }
+                self.current_page = Page::Live(LivePage::new());
+                self.init_current_page().await;
             }
             NavItem::Bangumi => {
-                if !matches!(self.current_page, Page::Bangumi(_)) {
-                    if let Some(cached) = self.cached_bangumi.take() {
-                        self.current_page = Page::Bangumi(Box::new(cached));
-                    } else {
-                        self.current_page = Page::Bangumi(Box::<BangumiPage>::default());
-                        self.init_current_page().await;
-                    }
+                if let Some(cached) = self.cached_bangumi.take() {
+                    self.current_page = Page::Bangumi(Box::new(cached));
+                } else {
+                    self.current_page = Page::Bangumi(Box::<BangumiPage>::default());
+                    self.init_current_page().await;
                 }
             }
         }
@@ -700,11 +835,18 @@ impl App {
             }
             Page::Bangumi(page) => {
                 page.loading = true;
+                let season_type = page.current_tab.season_type();
                 let req_id = self.next_request_id("bangumi_index");
-                self.send_network_command(network::NetworkCommand::LoadBangumiIndex { req_id });
+                self.send_network_command(network::NetworkCommand::LoadBangumiIndex {
+                    req_id,
+                    season_type,
+                });
             }
             Page::BangumiDetail(_) => {
                 // BangumiDetail is initialized when created
+            }
+            Page::UpVideoList(_) => {
+                // UpVideoList is initialized when created
             }
         }
     }

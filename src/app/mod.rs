@@ -7,7 +7,10 @@ use crate::infrastructure::{
     bilibili::ApiClient,
     persistence::{self, AppConfig, Credentials, Keybindings},
 };
-use crate::presentation::tui::{BangumiPage, DEFAULT_THEME_ID, HomePage, Page, Sidebar, Theme};
+use crate::presentation::tui::{
+    BangumiPage, DEFAULT_THEME_ID, DynamicPage, HistoryPage, HomePage, Page, SearchPage, Sidebar,
+    Theme,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -21,6 +24,7 @@ pub enum PreviousPage {
     History,
     Live,
     Bangumi,
+    VideoDetail { bvid: String, aid: i64 },
 }
 
 /// Main application state
@@ -43,6 +47,12 @@ pub struct App {
     pub cached_home: Option<HomePage>,
     /// Cached bangumi page to avoid refresh when switching tabs
     pub cached_bangumi: Option<BangumiPage>,
+    /// Cached search page to preserve query/results when navigating away
+    pub cached_search: Option<SearchPage>,
+    /// Cached dynamic page to preserve feed state when navigating away
+    pub cached_dynamic: Option<DynamicPage>,
+    /// Cached history page to preserve scroll state when navigating away
+    pub cached_history: Option<HistoryPage>,
     network_command_tx: mpsc::Sender<network::NetworkCommand>,
     network_event_rx: mpsc::Receiver<network::NetworkEvent>,
     request_seq: u64,
@@ -90,6 +100,9 @@ impl App {
                 .then_some("⚠ 旧主题配置无效，请前往设置页重新选择主题".to_string()),
             cached_home: None,
             cached_bangumi: None,
+            cached_search: None,
+            cached_dynamic: None,
+            cached_history: None,
             network_command_tx: bridge.command_tx,
             network_event_rx: bridge.event_rx,
             request_seq: 0,

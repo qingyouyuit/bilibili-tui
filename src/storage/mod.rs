@@ -76,6 +76,9 @@ pub struct Keybindings {
     // Dynamic page specific
     pub up_prev: String,
     pub up_next: String,
+
+    // Open UP主 page
+    pub open_up: String,
 }
 
 impl Default for Keybindings {
@@ -115,6 +118,9 @@ impl Default for Keybindings {
             // Dynamic page
             up_prev: "[".to_string(),
             up_next: "]".to_string(),
+
+            // Open UP主 page
+            open_up: "u".to_string(),
         }
     }
 }
@@ -294,6 +300,10 @@ impl Keybindings {
         self.matches(&self.up_next, key) || key == KeyCode::Char(']')
     }
 
+    pub fn matches_open_up(&self, key: KeyCode) -> bool {
+        self.matches(&self.open_up, key)
+    }
+
     pub fn get_nav_keys_display(&self) -> String {
         format!(
             "{}{}{}{}",
@@ -337,6 +347,8 @@ impl Keybindings {
             // Dynamic page
             ("上一UP", &self.up_prev),
             ("下一UP", &self.up_next),
+            // Open UP主 page
+            ("查看UP主", &self.open_up),
         ]
     }
 
@@ -372,6 +384,8 @@ impl Keybindings {
             // Dynamic page
             21 => self.up_prev = new_key,
             22 => self.up_next = new_key,
+            // Open UP主 page
+            23 => self.open_up = new_key,
             _ => {}
         }
     }

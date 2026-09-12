@@ -698,7 +698,7 @@ impl Component for VideoDetailPage {
             format!("[{}] 发送评论  [{}] 取消", keys.confirm, keys.back)
         } else {
             format!(
-                "[{}/{}] 滚动  [{}] 切换  [{}] 点赞/选择  [{}] 评论  [{}] 回复  [{}] 播放  [{}] 返回",
+                "[{}/{}] 滚动  [{}] 切换  [{}] 点赞/选择  [{}] 评论  [{}] 回复  [{}] 播放  [{}] UP主  [{}] 返回",
                 keys.nav_up,
                 keys.nav_down,
                 keys.nav_next_page,
@@ -706,6 +706,7 @@ impl Component for VideoDetailPage {
                 keys.comment,
                 keys.toggle_replies,
                 keys.play,
+                keys.open_up,
                 keys.back
             )
         };
@@ -918,6 +919,14 @@ impl Component for VideoDetailPage {
                 }
             }
             return Some(AppAction::None);
+        }
+        if keys.matches_open_up(key)
+            && let Some(ref info) = self.video_info
+        {
+            return Some(AppAction::OpenUpVideoList {
+                mid: info.owner.mid,
+                name: info.owner.name.clone(),
+            });
         }
         Some(AppAction::None)
     }

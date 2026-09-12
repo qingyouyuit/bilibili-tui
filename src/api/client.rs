@@ -191,6 +191,26 @@ impl ApiClient {
         self.get(&url).await
     }
 
+    /// Make a WBI-signed GET request and return raw JSON
+    pub async fn get_with_wbi_json(
+        &self,
+        base_url: &str,
+        params: Vec<(&str, String)>,
+    ) -> Result<serde_json::Value> {
+        self.ensure_wbi_keys().await?;
+
+        let query = {
+            let keys = self.wbi_keys.read().expect("wbi_keys lock poisoned");
+            let keys = keys
+                .as_ref()
+                .expect("WBI keys should be set after ensure_wbi_keys");
+            wbi::encode_wbi(params, &keys.img_key, &keys.sub_key)
+        };
+        let url = format!("{}?{}", base_url, query);
+
+        self.get_json(&url).await
+    }
+
     /// Fetch WBI keys from nav API
     async fn ensure_wbi_keys(&self) -> Result<()> {
         if self
@@ -441,6 +461,25 @@ impl ApiClient {
         }))
     }
 
+    /// Search with arbitrary search_type, returns raw JSON for flexible parsing
+    pub async fn search(
+        &self,
+        keyword: &str,
+        page: i32,
+        search_type: &str,
+    ) -> Result<serde_json::Value> {
+        let url = self.build_url(BilibiliApiDomain::Main, "/x/web-interface/wbi/search/type");
+
+        let params = vec![
+            ("search_type", search_type.to_string()),
+            ("keyword", keyword.to_string()),
+            ("page", page.to_string()),
+        ];
+
+        let resp: ApiResponse<serde_json::Value> = self.get_with_wbi(&url, params).await?;
+        Ok(resp.data.unwrap_or(serde_json::Value::Null))
+    }
+
     /// Fetch hot search keywords (web)
     pub async fn get_hot_search(&self) -> Result<Vec<super::search::HotwordItem>> {
         const HOTWORD_URL: &str = "https://s.search.bilibili.com/main/hotword";
@@ -476,10 +515,11 @@ impl ApiClient {
         Ok(result)
     }
 
-    pub async fn get_bangumi_rank(&self) -> Result<Vec<super::bangumi::SeasonRankItem>> {
+    pub async fn get_bangumi_rank(&self, season_type: i32) -> Result<Vec<super::bangumi::SeasonRankItem>> {
         let url = format!(
-            "{}/pgc/web/rank/list?day=3&season_type=1",
+            "{}/pgc/web/rank/list?day=3&season_type={}",
             BilibiliApiDomain::Main.as_str(),
+            season_type,
         );
         let value = self.get_json(&url).await?;
         Self::check_code(&value)?;
@@ -743,6 +783,60 @@ impl ApiClient {
         let resp: ApiResponse<super::history::HistoryData> = self.get(&url).await?;
         resp.data
             .ok_or_else(|| anyhow::anyhow!("No data in history response"))
+    }
+
+    // ========== UP主 Space API ==========
+
+    /// Get UP主's video list from their space
+    pub async fn get_up_videos(
+        &self,
+        mid: i64,
+        page: i32,
+        page_size: i32,
+    ) -> Result<super::video::UpVideoListData> {
+        let url = self.build_url(
+            BilibiliApiDomain::Main,
+            "/x/space/wbi/arc/search",
+        );
+
+        let params = vec![
+            ("mid", mid.to_string()),
+            ("ps", page_size.to_string()),
+            ("pn", page.to_string()),
+        ];
+
+        let value = self.get_with_wbi_json(&url, params).await?;
+        Self::check_code(&value)?;
+
+        let data = value.get("data").ok_or_else(|| anyhow!("API 返回缺少 data 字段"))?;
+        let list = data.get("list").and_then(|l| l.get("vlist")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let page_obj = data.get("page").ok_or_else(|| anyhow!("API 返回缺少 page 字段"))?;
+
+        let pn = page_obj.get("pn").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+        let ps = page_obj.get("ps").and_then(|v| v.as_i64()).unwrap_or(30) as i32;
+        let count = page_obj.get("count").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+
+        let vlist = list.into_iter().filter_map(|item| {
+            let bvid = item.get("bvid")?.as_str()?.to_string();
+            let aid = item.get("aid")?.as_i64()?;
+            let title = item.get("title")?.as_str()?.to_string();
+            let pic = item.get("pic").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let play = item.get("play").and_then(|v| v.as_i64()).unwrap_or(0);
+            let length = item.get("length").and_then(|v| v.as_str()).unwrap_or("--:--").to_string();
+            let video_review = item.get("video_review").and_then(|v| v.as_i64()).unwrap_or(0);
+            let author = item.get("author")?.as_str()?.to_string();
+            let mid = item.get("mid")?.as_i64()?;
+            let created = item.get("created").and_then(|v| v.as_i64()).unwrap_or(0);
+
+            Some(super::video::UpVideoItem {
+                aid, bvid, title, pic, play, length, video_review, author, mid, created,
+            })
+        }).collect();
+
+        Ok(super::video::UpVideoListData {
+            vlist,
+            page: super::video::UpVideoPageInfo { pn, ps, count },
+        })
     }
 
     // ========== Comment Action APIs ==========

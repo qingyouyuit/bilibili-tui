@@ -3,7 +3,7 @@
 use super::video_card::{VideoCard, VideoCardGrid};
 use super::{Component, Theme};
 use crate::api::client::ApiClient;
-use crate::api::search::{HotwordItem, SearchVideoItem};
+use crate::api::search::{HotwordItem, SearchType, SearchVideoItem};
 use crate::application::AppAction;
 use crate::storage::Keybindings;
 use ratatui::{
@@ -12,6 +12,21 @@ use ratatui::{
     widgets::*,
 };
 use std::time::Instant;
+
+fn sanitize_title(s: &str) -> String {
+    s.replace("<em class=\"keyword\">", "")
+        .replace("</em>", "")
+}
+
+fn fix_cover_url(url: Option<&str>) -> Option<String> {
+    url.map(|u| {
+        if u.starts_with("//") {
+            format!("https:{}", u)
+        } else {
+            u.to_string()
+        }
+    })
+}
 
 pub struct SearchPage {
     pub query: String,
@@ -27,6 +42,8 @@ pub struct SearchPage {
     pub page: i32,
     pub total_results: i32,
     pub loading_more: bool,
+    pub search_type: SearchType,
+    pub card_actions: Vec<AppAction>,
     last_click_time: Option<Instant>,
     last_click_index: Option<usize>,
 }
@@ -47,14 +64,32 @@ impl SearchPage {
             page: 1,
             total_results: 0,
             loading_more: false,
+            search_type: SearchType::Video,
+            card_actions: Vec::new(),
             last_click_time: None,
             last_click_index: None,
         }
     }
 
+    pub fn switch_type(&mut self, search_type: SearchType) {
+        if self.search_type != search_type {
+            self.search_type = search_type;
+            self.grid.clear();
+            self.card_actions.clear();
+            self.loading = true;
+            self.error_message = None;
+            self.page = 1;
+            self.total_results = 0;
+        }
+    }
+
     pub fn set_results(&mut self, results: Vec<SearchVideoItem>, total: i32) {
         self.grid.clear();
+        self.card_actions.clear();
         for item in results {
+            let action = item.bvid.as_ref().map(|bvid| {
+                AppAction::OpenVideoDetail(bvid.clone(), item.mid.unwrap_or(0))
+            });
             let card = VideoCard::new(
                 item.bvid.clone(),
                 item.mid,
@@ -65,6 +100,7 @@ impl SearchPage {
                 item.cover_url(),
             );
             self.grid.add_card(card);
+            self.card_actions.push(action.unwrap_or(AppAction::None));
         }
         self.total_results = total;
         self.loading = false;
@@ -75,6 +111,9 @@ impl SearchPage {
 
     pub fn append_results(&mut self, results: Vec<SearchVideoItem>) {
         for item in results {
+            let action = item.bvid.as_ref().map(|bvid| {
+                AppAction::OpenVideoDetail(bvid.clone(), item.mid.unwrap_or(0))
+            });
             let card = VideoCard::new(
                 item.bvid.clone(),
                 item.mid,
@@ -85,8 +124,159 @@ impl SearchPage {
                 item.cover_url(),
             );
             self.grid.add_card(card);
+            self.card_actions.push(action.unwrap_or(AppAction::None));
         }
         self.loading_more = false;
+    }
+
+    pub fn set_results_json(&mut self, data: &serde_json::Value) {
+        self.grid.clear();
+        self.card_actions.clear();
+        let items = data.get("result").and_then(|r| r.as_array());
+        if let Some(items) = items {
+            for item in items {
+                let (card, action) = self.parse_search_item(item);
+                self.grid.add_card(card);
+                self.card_actions.push(action);
+            }
+        }
+        self.total_results = items.map_or(0, |i| i.len() as i32);
+        self.loading = false;
+        self.input_mode = false;
+        self.show_hot_list = false;
+        self.error_message = None;
+    }
+
+    pub fn append_results_json(&mut self, data: &serde_json::Value) {
+        let items = data.get("result").and_then(|r| r.as_array());
+        if let Some(items) = items {
+            for item in items {
+                let (card, action) = self.parse_search_item(item);
+                self.grid.add_card(card);
+                self.card_actions.push(action);
+            }
+        }
+        self.loading_more = false;
+    }
+
+    fn parse_search_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
+        match self.search_type {
+            SearchType::Video => self.parse_video_item(item),
+            SearchType::MediaBangumi => self.parse_bangumi_item(item),
+            SearchType::MediaFt => self.parse_mediaft_item(item),
+            SearchType::LiveRoom => self.parse_live_room_item(item),
+            SearchType::LiveUser => self.parse_live_user_item(item),
+            SearchType::User => self.parse_user_item(item),
+            SearchType::Article => self.parse_article_item(item),
+            SearchType::Topic => self.parse_topic_item(item),
+        }
+    }
+
+    fn parse_video_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
+        let bvid = item.get("bvid").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let aid = item.get("aid").and_then(|v| v.as_i64());
+        let title = sanitize_title(item.get("title").and_then(|v| v.as_str()).unwrap_or("无标题"));
+        let author = item.get("author").and_then(|v| v.as_str()).unwrap_or("未知");
+        let play = item.get("play").and_then(|v| v.as_i64()).unwrap_or(0);
+        let views = if play >= 10000 {
+            format!("{:.1}万", play as f64 / 10000.0)
+        } else {
+            play.to_string()
+        };
+        let duration = item.get("duration").and_then(|v| v.as_str()).unwrap_or("-");
+        let cover = fix_cover_url(item.get("pic").and_then(|v| v.as_str()));
+        let action = bvid.as_ref().map(|b| AppAction::OpenVideoDetail(b.clone(), aid.unwrap_or(0)))
+            .unwrap_or(AppAction::None);
+        (VideoCard::new(bvid, aid, title, author.to_string(), views, duration.to_string(), cover), action)
+    }
+
+    fn parse_bangumi_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
+        let season_id = item.get("season_id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let title = sanitize_title(item.get("title").and_then(|v| v.as_str()).unwrap_or("无标题"));
+        let subtitle = item.get("index_show").and_then(|v| v.as_str()).unwrap_or("");
+        let badge = item.get("badge").and_then(|v| v.as_str()).unwrap_or("");
+        let score = item.get("score").and_then(|v| v.as_str()).unwrap_or("");
+        let cover = fix_cover_url(item.get("cover").and_then(|v| v.as_str()));
+        let action = if season_id > 0 {
+            AppAction::OpenBangumiDetail(season_id)
+        } else {
+            AppAction::None
+        };
+        (VideoCard::new(None, None, title, subtitle.to_string(), score.to_string(), badge.to_string(), cover), action)
+    }
+
+    fn parse_mediaft_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
+        let media_id = item.get("media_id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let season_id = item.get("season_id").and_then(|v| v.as_i64()).unwrap_or(media_id);
+        let title = sanitize_title(item.get("title").and_then(|v| v.as_str()).unwrap_or("无标题"));
+        let subtitle = item.get("index_show").and_then(|v| v.as_str()).unwrap_or("");
+        let badge = item.get("badge").and_then(|v| v.as_str()).unwrap_or("");
+        let cover = fix_cover_url(item.get("cover").and_then(|v| v.as_str()));
+        let action = if season_id > 0 {
+            AppAction::OpenBangumiDetail(season_id)
+        } else {
+            AppAction::None
+        };
+        (VideoCard::new(None, None, title, subtitle.to_string(), String::new(), badge.to_string(), cover), action)
+    }
+
+    fn parse_live_room_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
+        let room_id = item.get("roomid").and_then(|v| v.as_i64()).unwrap_or(0);
+        let title = sanitize_title(item.get("title").and_then(|v| v.as_str()).unwrap_or("无标题"));
+        let uname = item.get("uname").and_then(|v| v.as_str()).unwrap_or("未知");
+        let cover = fix_cover_url(item.get("cover").and_then(|v| v.as_str()));
+        let online = item.get("online").and_then(|v| v.as_i64()).unwrap_or(0);
+        let views = format!("{}人", online);
+        let status = if item.get("live_status").and_then(|v| v.as_i64()).unwrap_or(0) == 1 { "直播中" } else { "未直播" };
+        let action = if room_id > 0 {
+            AppAction::OpenLiveDetail(room_id)
+        } else {
+            AppAction::None
+        };
+        (VideoCard::new(None, None, title, uname.to_string(), views, status.to_string(), cover), action)
+    }
+
+    fn parse_live_user_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
+        let room_id = item.get("room_id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let uname = item.get("uname").and_then(|v| v.as_str()).unwrap_or("未知");
+        let face = fix_cover_url(item.get("face").and_then(|v| v.as_str()));
+        let status = if item.get("live_status").and_then(|v| v.as_i64()).unwrap_or(0) == 1 { "直播中" } else { "未直播" };
+        let action = if room_id > 0 {
+            AppAction::OpenLiveDetail(room_id)
+        } else {
+            AppAction::None
+        };
+        (VideoCard::new(None, None, uname.to_string(), String::new(), String::new(), status.to_string(), face), action)
+    }
+
+    fn parse_user_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
+        let name = item.get("name").and_then(|v| v.as_str()).unwrap_or("未知");
+        let face = fix_cover_url(item.get("face").and_then(|v| v.as_str()));
+        let fans = item.get("fans").and_then(|v| v.as_i64()).unwrap_or(0);
+        let videos = item.get("videos").and_then(|v| v.as_i64()).unwrap_or(0);
+        let subtitle = format!("{}粉丝 {}视频", fans, videos);
+        (VideoCard::new(None, None, name.to_string(), subtitle, String::new(), String::new(), face), AppAction::None)
+    }
+
+    fn parse_article_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
+        let title = sanitize_title(item.get("title").and_then(|v| v.as_str()).unwrap_or("无标题"));
+        let author = item.get("author").and_then(|v| v.as_str()).unwrap_or("未知");
+        let view = item.get("view").and_then(|v| v.as_i64()).unwrap_or(0);
+        let views = format!("{}阅读", view);
+        let cover = item.get("image_urls")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|v| fix_cover_url(v.as_str()));
+        (VideoCard::new(None, None, title, author.to_string(), views, String::new(), cover), AppAction::None)
+    }
+
+    fn parse_topic_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
+        let topic_name = item.get("topic_name").and_then(|v| v.as_str()).unwrap_or("未知话题");
+        let desc = item.get("desc").and_then(|v| v.as_str()).unwrap_or("");
+        let view = item.get("view").and_then(|v| v.as_i64()).unwrap_or(0);
+        let views = format!("{}浏览", view);
+        let cover = fix_cover_url(item.get("cover").and_then(|v| v.as_str()));
+        (VideoCard::new(None, None, topic_name.to_string(), desc.to_string(), views, String::new(), cover), AppAction::None)
     }
 
     pub fn set_error(&mut self, msg: String) {
@@ -123,7 +313,6 @@ impl SearchPage {
             return;
         }
 
-        // Check if we have more results
         if self.grid.cards.len() >= self.total_results as usize {
             return;
         }
@@ -131,13 +320,14 @@ impl SearchPage {
         self.loading_more = true;
         self.page += 1;
 
-        match api_client.search_videos(&self.query, self.page).await {
+        let st = self.search_type;
+        match api_client.search(&self.query, self.page, st.api_value()).await {
             Ok(data) => {
-                let results = data.result.unwrap_or_default();
-                if results.is_empty() {
+                let items = data.get("result").and_then(|r| r.as_array());
+                if items.map_or(true, |i| i.is_empty()) {
                     self.page -= 1;
                 }
-                self.append_results(results);
+                self.append_results_json(&data);
             }
             Err(_) => {
                 self.page -= 1;
@@ -257,6 +447,7 @@ impl Component for SearchPage {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3), // Search input
+                Constraint::Length(1), // Search type tab bar
                 Constraint::Min(10),   // Results grid
                 Constraint::Length(2), // Help
             ])
@@ -270,7 +461,7 @@ impl Component for SearchPage {
         };
 
         let input_block = Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
             .border_type(BorderType::Rounded)
             .border_style(if self.input_mode {
                 Style::default().fg(theme.bilibili_pink)
@@ -278,7 +469,7 @@ impl Component for SearchPage {
                 Style::default().fg(theme.border_subtle)
             })
             .title(Span::styled(
-                " 🔍 搜索视频 ",
+                " 🔍 搜索 ",
                 Style::default().fg(theme.bilibili_pink),
             ));
 
@@ -288,9 +479,48 @@ impl Component for SearchPage {
             .block(input_block);
         frame.render_widget(input, chunks[0]);
 
+        // Search type tab bar
+        let mut tab_spans = Vec::new();
+        for (i, st) in SearchType::all().iter().enumerate() {
+            if i > 0 {
+                tab_spans.push(Span::raw(" "));
+            }
+            let is_active = *st == self.search_type;
+            let num = i + 1;
+            let tab_text = if num <= 8 {
+                format!("[{}]{}", num, st.label())
+            } else {
+                st.label().to_string()
+            };
+            if is_active {
+                tab_spans.push(Span::styled(
+                    tab_text,
+                    Style::default()
+                        .fg(theme.fg_accent)
+                        .add_modifier(Modifier::BOLD)
+                        .add_modifier(Modifier::UNDERLINED),
+                ));
+            } else {
+                tab_spans.push(Span::styled(
+                    tab_text,
+                    Style::default().fg(theme.fg_secondary),
+                ));
+            }
+        }
+        let tabs = Paragraph::new(Line::from(tab_spans))
+            .block(
+                Block::default()
+                    .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(theme.border_unfocused)),
+            )
+            .alignment(Alignment::Center);
+        frame.render_widget(tabs, chunks[1]);
+
         // Results
+        let content_area = chunks[2];
         if self.show_hot_list {
-            self.draw_hot_list(frame, chunks[1], theme);
+            self.draw_hot_list(frame, content_area, theme);
         } else if self.loading {
             let loading = Paragraph::new("⏳ 搜索中...")
                 .style(Style::default().fg(theme.warning))
@@ -305,7 +535,7 @@ impl Component for SearchPage {
                             Style::default().fg(theme.fg_secondary),
                         )),
                 );
-            frame.render_widget(loading, chunks[1]);
+            frame.render_widget(loading, content_area);
         } else if let Some(error) = &self.error_message {
             let error_widget = Paragraph::new(format!("❌ {}", error))
                 .style(Style::default().fg(theme.error))
@@ -316,12 +546,12 @@ impl Component for SearchPage {
                         .border_type(BorderType::Rounded)
                         .border_style(Style::default().fg(theme.border_unfocused)),
                 );
-            frame.render_widget(error_widget, chunks[1]);
+            frame.render_widget(error_widget, content_area);
         } else if self.grid.cards.is_empty() {
             let empty = Paragraph::new(if self.query.is_empty() {
                 "输入关键词开始搜索"
             } else {
-                "没有找到相关视频"
+                "没有找到相关内容"
             })
             .style(Style::default().fg(theme.fg_secondary))
             .alignment(Alignment::Center)
@@ -331,9 +561,8 @@ impl Component for SearchPage {
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(theme.border_unfocused)),
             );
-            frame.render_widget(empty, chunks[1]);
+            frame.render_widget(empty, content_area);
         } else {
-            // Render with header
             let header = Paragraph::new(Line::from(vec![
                 Span::styled(" 搜索结果 ", Style::default().fg(theme.bilibili_pink)),
                 Span::styled(
@@ -355,12 +584,12 @@ impl Component for SearchPage {
 
             let header_area = Rect {
                 height: 2,
-                ..chunks[1]
+                ..content_area
             };
             let grid_area = Rect {
-                y: chunks[1].y + 2,
-                height: chunks[1].height.saturating_sub(2),
-                ..chunks[1]
+                y: content_area.y + 2,
+                height: content_area.height.saturating_sub(2),
+                ..content_area
             };
 
             frame.render_widget(header, header_area);
@@ -374,19 +603,20 @@ impl Component for SearchPage {
                 keys.confirm, keys.back, keys.nav_next_page
             )
         } else {
+            let type_hint = "[1-8]切换类型".to_string();
             format!(
-                "[{}/{}] 导航  [{}] 详情  [{}] 搜索  [{}] 切换",
+                "[{}/{}] 导航  [{}] 详情  [{}] 搜索  {}",
                 keys.get_arrow_keys_display(),
                 keys.get_nav_keys_display(),
                 keys.confirm,
                 keys.search_focus,
-                keys.nav_next_page
+                type_hint,
             )
         };
         let help = Paragraph::new(help_text)
             .style(Style::default().fg(theme.fg_secondary))
             .alignment(Alignment::Center);
-        frame.render_widget(help, chunks[2]);
+        frame.render_widget(help, chunks[3]);
     }
 
     fn handle_input(
@@ -509,12 +739,18 @@ impl Component for SearchPage {
                 return Some(AppAction::None);
             }
             if keys.matches_confirm(key) {
-                if let Some(card) = self.grid.selected_card()
-                    && let (Some(bvid), Some(aid)) = (&card.bvid, card.aid)
-                {
-                    return Some(AppAction::OpenVideoDetail(bvid.clone(), aid));
+                return self.card_actions.get(self.grid.selected_index).cloned();
+            }
+            if let KeyCode::Char(c) = key {
+                if let Some(digit) = c.to_digit(10) {
+                    let types = SearchType::all();
+                    if digit >= 1 && digit <= types.len() as u32 {
+                        let new_type = types[digit as usize - 1];
+                        if new_type != self.search_type {
+                            return Some(AppAction::SwitchSearchType(new_type));
+                        }
+                    }
                 }
-                return Some(AppAction::None);
             }
             if keys.matches_search_focus(key) {
                 self.input_mode = true;
@@ -652,11 +888,7 @@ impl Component for SearchPage {
                     if is_double_click {
                         self.last_click_time = None;
                         self.last_click_index = None;
-                        if let Some(card) = self.grid.cards.get(click_idx)
-                            && let (Some(bvid), Some(aid)) = (&card.bvid, card.aid)
-                        {
-                            return Some(AppAction::OpenVideoDetail(bvid.clone(), aid));
-                        }
+                        return self.card_actions.get(click_idx).cloned();
                     } else {
                         self.grid.selected_index = click_idx;
                         self.grid.update_scroll(self.grid.cached_visible_rows);

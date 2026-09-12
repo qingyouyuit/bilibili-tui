@@ -1,6 +1,7 @@
 use crate::api::video::VideoPage;
 use crate::infrastructure::persistence::{Credentials, Keybindings};
-use crate::presentation::tui::DynamicTab;
+use crate::api::search::SearchType;
+use crate::presentation::tui::{BangumiTab, DynamicTab};
 
 /// Actions that can be triggered from UI components
 #[derive(Debug, Clone)]
@@ -39,6 +40,8 @@ pub enum AppAction {
     NavPrev,
     /// Search for videos
     Search(String),
+    /// Switch search type
+    SwitchSearchType(SearchType),
     /// Refresh dynamic feed
     RefreshDynamic,
     /// Open video detail page (bvid, aid)
@@ -51,6 +54,8 @@ pub enum AppAction {
     LoadMoreRecommendations,
     /// Load more search results
     LoadMoreSearch,
+    /// Search command with specific type (used internally)
+    SearchWithType(String, SearchType),
     /// Load more dynamic items
     LoadMoreDynamic,
     /// Load more history items
@@ -110,13 +115,15 @@ pub enum AppAction {
         season_id: i64,
         title: String,
     },
+    /// Open UP主's video list page
+    OpenUpVideoList {
+        mid: i64,
+        name: String,
+    },
+    /// Load more UP主 videos
+    LoadMoreUpVideos,
     /// No action
     None,
 }
 
-/// Bangumi page tabs
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BangumiTab {
-    Timeline,
-    Index,
-}
+

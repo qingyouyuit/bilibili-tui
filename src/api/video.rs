@@ -112,6 +112,55 @@ impl RelatedVideoItem {
     }
 }
 
+// ========== UP主 Space API types ==========
+
+#[derive(Debug, Clone)]
+pub struct UpVideoItem {
+    pub aid: i64,
+    pub bvid: String,
+    pub title: String,
+    pub pic: String,
+    pub play: i64,
+    pub length: String,
+    pub video_review: i64,
+    pub author: String,
+    pub mid: i64,
+    pub created: i64,
+}
+
+pub struct UpVideoListData {
+    pub vlist: Vec<UpVideoItem>,
+    pub page: UpVideoPageInfo,
+}
+
+pub struct UpVideoPageInfo {
+    pub pn: i32,
+    pub ps: i32,
+    pub count: i32,
+}
+
+impl UpVideoItem {
+    pub fn format_views(&self) -> String {
+        if self.play >= 10000 {
+            format!("{:.1}万", self.play as f64 / 10000.0)
+        } else {
+            self.play.to_string()
+        }
+    }
+
+    pub fn format_duration(&self) -> String {
+        self.length.clone()
+    }
+
+    pub fn cover_url(&self) -> String {
+        if self.pic.starts_with("//") {
+            format!("https:{}", self.pic)
+        } else {
+            self.pic.clone()
+        }
+    }
+}
+
 impl VideoStat {
     pub fn format_views(&self) -> String {
         if self.view >= 10000 {

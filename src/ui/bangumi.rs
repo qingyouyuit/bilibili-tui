@@ -13,12 +13,39 @@ use ratatui::{
 };
 use std::time::Instant;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BangumiTab {
+    Anime,
+    Domestic,
+}
+
+impl BangumiTab {
+    pub fn label(&self) -> &str {
+        match self {
+            BangumiTab::Anime => "番剧",
+            BangumiTab::Domestic => "国创",
+        }
+    }
+
+    pub fn all_tabs() -> [BangumiTab; 2] {
+        [BangumiTab::Anime, BangumiTab::Domestic]
+    }
+
+    pub fn season_type(&self) -> i32 {
+        match self {
+            BangumiTab::Anime => 1,
+            BangumiTab::Domestic => 4,
+        }
+    }
+}
+
 pub struct BangumiPage {
     pub index_grid: VideoCardGrid,
     pub loading: bool,
     pub error_message: Option<String>,
     /// Parallel array storing season_id for each index card
     pub index_season_ids: Vec<i64>,
+    pub current_tab: BangumiTab,
     // Double-click detection
     last_click_time: Option<Instant>,
     last_click_index: Option<usize>,
@@ -31,6 +58,7 @@ impl BangumiPage {
             loading: true,
             error_message: None,
             index_season_ids: Vec::new(),
+            current_tab: BangumiTab::Anime,
             last_click_time: None,
             last_click_index: None,
         }
@@ -56,6 +84,16 @@ impl BangumiPage {
         self.error_message = None;
     }
 
+    pub fn switch_tab(&mut self, tab: BangumiTab) {
+        if self.current_tab != tab {
+            self.current_tab = tab;
+            self.index_grid.clear();
+            self.index_season_ids.clear();
+            self.loading = true;
+            self.error_message = None;
+        }
+    }
+
     pub fn set_error(&mut self, msg: String) {
         self.error_message = Some(msg);
         self.loading = false;
@@ -64,7 +102,8 @@ impl BangumiPage {
     pub async fn load_index(&mut self, api_client: &ApiClient) {
         self.loading = true;
         self.error_message = None;
-        match api_client.get_bangumi_rank().await {
+        let season_type = self.current_tab.season_type();
+        match api_client.get_bangumi_rank(season_type).await {
             Ok(items) => self.set_index_items(items),
             Err(e) => self.set_error(format!("加载番剧排行失败: {}", e)),
         }
@@ -113,6 +152,24 @@ impl BangumiPage {
             ),
             Span::styled("] ", Style::default().fg(theme.fg_secondary)),
             Span::styled("刷新", Style::default().fg(theme.fg_secondary)),
+            Span::styled("  [", Style::default().fg(theme.fg_secondary)),
+            Span::styled(
+                "1",
+                Style::default()
+                    .fg(theme.fg_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("]", Style::default().fg(theme.fg_secondary)),
+            Span::styled("番剧", Style::default().fg(theme.fg_secondary)),
+            Span::styled("  [", Style::default().fg(theme.fg_secondary)),
+            Span::styled(
+                "2",
+                Style::default()
+                    .fg(theme.fg_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("]", Style::default().fg(theme.fg_secondary)),
+            Span::styled("国创", Style::default().fg(theme.fg_secondary)),
         ]);
         let help = Paragraph::new(help_line).alignment(Alignment::Center);
         frame.render_widget(help, area);
@@ -131,6 +188,7 @@ impl Component for BangumiPage {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3), // Title
+                Constraint::Length(1), // Tab bar
                 Constraint::Min(5),    // Content
                 Constraint::Length(2), // Help
             ])
@@ -146,17 +204,50 @@ impl Component for BangumiPage {
                     .add_modifier(Modifier::BOLD),
             ),
         ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(theme.border_subtle)),
-        )
-        .alignment(Alignment::Center);
+            .block(
+                Block::default()
+                    .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(theme.border_subtle)),
+            )
+            .alignment(Alignment::Center);
         frame.render_widget(title, chunks[0]);
 
+        // Tab bar
+        let mut tab_spans = Vec::new();
+        for (i, tab) in BangumiTab::all_tabs().iter().enumerate() {
+            if i > 0 {
+                tab_spans.push(Span::raw("  "));
+            }
+            let is_active = *tab == self.current_tab;
+            let tab_text = format!("[{}] {}", i + 1, tab.label());
+            if is_active {
+                tab_spans.push(Span::styled(
+                    tab_text,
+                    Style::default()
+                        .fg(theme.fg_accent)
+                        .add_modifier(Modifier::BOLD)
+                        .add_modifier(Modifier::UNDERLINED),
+                ));
+            } else {
+                tab_spans.push(Span::styled(
+                    tab_text,
+                    Style::default().fg(theme.fg_secondary),
+                ));
+            }
+        }
+        let tabs = Paragraph::new(Line::from(tab_spans))
+            .block(
+                Block::default()
+                    .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(theme.border_unfocused)),
+            )
+            .alignment(Alignment::Center);
+        frame.render_widget(tabs, chunks[1]);
+
         // Content
-        let content_area = chunks[1];
+        let content_area = chunks[2];
 
         if self.loading {
             let spinner = Paragraph::new("加载中...")
@@ -174,7 +265,7 @@ impl Component for BangumiPage {
         }
 
         // Footer help
-        self.render_footer(frame, chunks[2], theme, keys);
+        self.render_footer(frame, chunks[3], theme, keys);
     }
 
     fn handle_input(&mut self, key: KeyCode, keys: &Keybindings) -> Option<AppAction> {
@@ -218,6 +309,13 @@ impl Component for BangumiPage {
             self.index_grid.move_right();
             return Some(AppAction::None);
         }
+        if keys.matches_tab_1(key) {
+            return Some(AppAction::SwitchBangumiTab(BangumiTab::Anime));
+        }
+        if keys.matches_tab_2(key) {
+            return Some(AppAction::SwitchBangumiTab(BangumiTab::Domestic));
+        }
+
         if keys.matches_play(key) || keys.matches_confirm(key) {
             return self.selected_index_action();
         }
@@ -230,7 +328,7 @@ impl Component for BangumiPage {
             kind, row, column, ..
         } = event;
 
-        let content_top = area.y + 3; // skip title
+        let content_top = area.y + 4; // skip title + tab bar
         if row < content_top {
             return None;
         }

@@ -1,3 +1,4 @@
+use crate::api::search::SearchType;
 use crate::app::App;
 use crate::application::network;
 use crate::presentation::tui::{Page, VideoCard};
@@ -49,6 +50,9 @@ impl App {
                     if search_page.query != keyword {
                         return;
                     }
+                    if search_page.search_type != SearchType::Video {
+                        return;
+                    }
                     if page <= 1 {
                         search_page.page = 1;
                         search_page.set_results(results, total);
@@ -56,6 +60,33 @@ impl App {
                         search_page.page = page;
                         search_page.total_results = total;
                         search_page.append_results(results);
+                    }
+                }
+            }
+            network::NetworkEvent::SearchWithTypeLoaded {
+                req_id,
+                keyword,
+                page,
+                search_type,
+                data,
+            } => {
+                if !self.is_latest_request("search", req_id) {
+                    return;
+                }
+                if let Page::Search(search_page) = &mut self.current_page {
+                    if search_page.query != keyword {
+                        return;
+                    }
+                    if search_page.search_type != search_type {
+                        return;
+                    }
+                    if page <= 1 {
+                        search_page.page = 1;
+                        search_page.search_type = search_type;
+                        search_page.set_results_json(&data);
+                    } else {
+                        search_page.page = page;
+                        search_page.append_results_json(&data);
                     }
                 }
             }
@@ -142,6 +173,7 @@ impl App {
                     if page.bvid != bvid {
                         return;
                     }
+                    page.aid = video_info.aid;
                     page.video_info = Some(video_info);
                     page.comments = comments;
                     page.comment_page = 1;
@@ -212,6 +244,28 @@ impl App {
                     page.set_season(season);
                 }
             }
+            network::NetworkEvent::UpVideosLoaded {
+                req_id,
+                mid,
+                name,
+                videos,
+                has_more,
+                page,
+            } => {
+                if !self.is_latest_request("up_videos", req_id) {
+                    return;
+                }
+                if let Page::UpVideoList(page_component) = &mut self.current_page {
+                    if page_component.mid != mid {
+                        return;
+                    }
+                    if page <= 1 {
+                        page_component.set_videos(videos, name, has_more, page);
+                    } else {
+                        page_component.append_videos(videos, has_more, page);
+                    }
+                }
+            }
             network::NetworkEvent::RequestFailed {
                 req_id,
                 target,
@@ -263,6 +317,10 @@ impl App {
                     }
                     (Page::BangumiDetail(page), "bangumi_detail") => {
                         page.set_error(format!("加载番剧详情失败: {}", error));
+                    }
+                    (Page::UpVideoList(page), "up_videos") => {
+                        page.loading = false;
+                        page.error_message = Some(format!("加载UP主视频失败: {}", error));
                     }
                     _ => {}
                 }

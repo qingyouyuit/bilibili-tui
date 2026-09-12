@@ -2,6 +2,60 @@
 
 use serde::Deserialize;
 
+/// Bilibili search type enum matching the API's search_type parameter
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchType {
+    Video,
+    MediaBangumi,
+    MediaFt,
+    LiveRoom,
+    LiveUser,
+    User,
+    Article,
+    Topic,
+}
+
+impl SearchType {
+    pub fn all() -> &'static [SearchType] {
+        &[
+            SearchType::Video,
+            SearchType::MediaBangumi,
+            SearchType::MediaFt,
+            SearchType::LiveRoom,
+            SearchType::LiveUser,
+            SearchType::User,
+            SearchType::Article,
+            SearchType::Topic,
+        ]
+    }
+
+    pub fn api_value(&self) -> &'static str {
+        match self {
+            SearchType::Video => "video",
+            SearchType::MediaBangumi => "media_bangumi",
+            SearchType::MediaFt => "media_ft",
+            SearchType::LiveRoom => "live_room",
+            SearchType::LiveUser => "live_user",
+            SearchType::User => "user",
+            SearchType::Article => "article",
+            SearchType::Topic => "topic",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            SearchType::Video => "视频",
+            SearchType::MediaBangumi => "番剧",
+            SearchType::MediaFt => "影视",
+            SearchType::LiveRoom => "直播",
+            SearchType::LiveUser => "主播",
+            SearchType::User => "用户",
+            SearchType::Article => "专栏",
+            SearchType::Topic => "话题",
+        }
+    }
+}
+
 /// Search result for video type
 #[derive(Debug, Deserialize)]
 pub struct SearchData {
@@ -29,7 +83,6 @@ pub struct SearchVideoItem {
 
 impl SearchVideoItem {
     pub fn display_title(&self) -> String {
-        // Remove HTML tags like <em class="keyword">
         self.title
             .as_deref()
             .unwrap_or("无标题")

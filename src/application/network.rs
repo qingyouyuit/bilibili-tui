@@ -11,8 +11,10 @@ use crate::api::{
     search::HotwordItem,
     search::SearchVideoItem,
     video::RelatedVideoItem,
+    video::UpVideoItem,
     video::VideoInfo,
 };
+use crate::api::search::SearchType;
 use crate::presentation::tui::DynamicTab;
 use std::sync::{Arc, mpsc};
 
@@ -34,6 +36,12 @@ pub enum NetworkCommand {
         req_id: u64,
         keyword: String,
         page: i32,
+    },
+    SearchWithType {
+        req_id: u64,
+        keyword: String,
+        page: i32,
+        search_type: SearchType,
     },
     LoadDynamicInit {
         req_id: u64,
@@ -75,10 +83,16 @@ pub enum NetworkCommand {
     },
     LoadBangumiIndex {
         req_id: u64,
+        season_type: i32,
     },
     LoadBangumiDetail {
         req_id: u64,
         season_id: i64,
+    },
+    LoadUpVideos {
+        req_id: u64,
+        mid: i64,
+        page: i32,
     },
 }
 
@@ -103,6 +117,13 @@ pub enum NetworkEvent {
         page: i32,
         results: Vec<SearchVideoItem>,
         total: i32,
+    },
+    SearchWithTypeLoaded {
+        req_id: u64,
+        keyword: String,
+        page: i32,
+        search_type: SearchType,
+        data: serde_json::Value,
     },
     DynamicLoaded {
         req_id: u64,
@@ -146,6 +167,14 @@ pub enum NetworkEvent {
         req_id: u64,
         season_id: i64,
         season: SeasonResult,
+    },
+    UpVideosLoaded {
+        req_id: u64,
+        mid: i64,
+        name: String,
+        videos: Vec<UpVideoItem>,
+        has_more: bool,
+        page: i32,
     },
     RequestFailed {
         req_id: u64,
@@ -232,6 +261,21 @@ async fn handle_command(api_client: Arc<ApiClient>, command: NetworkCommand) -> 
                 page,
                 results: data.result.unwrap_or_default(),
                 total: data.num_results.unwrap_or(0),
+            },
+            Err(e) => failed(req_id, "search", e),
+        },
+        NetworkCommand::SearchWithType {
+            req_id,
+            keyword,
+            page,
+            search_type,
+        } => match api_client.search(&keyword, page, search_type.api_value()).await {
+            Ok(data) => NetworkEvent::SearchWithTypeLoaded {
+                req_id,
+                keyword,
+                page,
+                search_type,
+                data,
             },
             Err(e) => failed(req_id, "search", e),
         },
@@ -347,7 +391,10 @@ async fn handle_command(api_client: Arc<ApiClient>, command: NetworkCommand) -> 
                 Ok(info) => info,
                 Err(e) => return failed(req_id, "video_detail", e),
             };
-            let (comments, has_more_comments) = match api_client.get_comments(aid, 1).await {
+            // Always trust the authoritative aid from video info (the passed-in
+            // aid may be wrong, e.g. search results carry the uploader's mid).
+            let _ = aid;
+            let (comments, has_more_comments) = match api_client.get_comments(video_info.aid, 1).await {
                 Ok(data) => {
                     let comments = data.replies.unwrap_or_default();
                     let has_more = data
@@ -419,7 +466,7 @@ async fn handle_command(api_client: Arc<ApiClient>, command: NetworkCommand) -> 
                 image_urls,
             }
         }
-        NetworkCommand::LoadBangumiIndex { req_id } => match api_client.get_bangumi_rank().await {
+        NetworkCommand::LoadBangumiIndex { req_id, season_type } => match api_client.get_bangumi_rank(season_type).await {
             Ok(items) => NetworkEvent::BangumiIndexLoaded { req_id, items },
             Err(e) => failed(req_id, "bangumi_index", e),
         },
@@ -431,6 +478,25 @@ async fn handle_command(api_client: Arc<ApiClient>, command: NetworkCommand) -> 
                     season,
                 },
                 Err(e) => failed(req_id, "bangumi_detail", e),
+            }
+        }
+        NetworkCommand::LoadUpVideos { req_id, mid, page } => {
+            match api_client.get_up_videos(mid, page, 30).await {
+                Ok(data) => {
+                    let has_more = data.page.count > page * data.page.ps;
+                    let name = data.vlist.first()
+                        .map(|v| v.author.clone())
+                        .unwrap_or_default();
+                    NetworkEvent::UpVideosLoaded {
+                        req_id,
+                        mid,
+                        name,
+                        videos: data.vlist,
+                        has_more,
+                        page,
+                    }
+                }
+                Err(e) => failed(req_id, "up_videos", e),
             }
         }
     }
