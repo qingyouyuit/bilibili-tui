@@ -87,6 +87,24 @@ local function schedule(width, height, now)
 end
 
 
+-- mp.get_time() is the system clock and keeps advancing while playback is
+-- paused, so danmaku used to keep scrolling during pause. Drive the animation
+-- from the playback position instead: it freezes on pause and follows the
+-- playback speed. Streams without a timeline fall back to the internal clock.
+local last_animation_time = nil
+local function animation_time()
+    local now = mp.get_property_number("time-pos", nil)
+    if now == nil then
+        now = mp.get_time()
+    elseif last_animation_time ~= nil and math.abs(now - last_animation_time) > 2.0 then
+        -- Seek or discontinuity: drop stale messages so they do not replay.
+        active, pending = {}, {}
+        lane_ready = {}
+    end
+    last_animation_time = now
+    return now
+end
+
 local function render()
     local width, height = mp.get_osd_size()
     if width <= 0 or height <= 0 then return end
@@ -99,7 +117,7 @@ local function render()
         return
     end
 
-    local now = mp.get_time()
+    local now = animation_time()
     local font_size, lane_height, top, lanes = schedule(width, height, now)
     local alpha = math.floor((1.0 - config.opacity) * 255 + 0.5)
     local lines, remaining = {}, {}
