@@ -1,11 +1,12 @@
 # Changelog
 
-## [1.0.12] - 2026-07-19
+## [Unreleased]
 
 ### 🚀 Features
 
 - **UP主空间页面**：在视频详情页按 `u` 键查看该 UP 主发布的所有视频列表
 - **新增 `open_up` 键位绑定**（默认 `u`），可在设置页自定义
+- 合并上游 v1.0.14：收藏夹、专栏阅读、CDN 优选、播放队列、自动连播、清晰度选择、弹幕配置等
 
 ### 🚜 Refactor
 
@@ -23,6 +24,43 @@
 - 修复搜索结果打开视频时评论加载错误：改用视频信息中的权威 `aid`，而非搜索项中的 UP 主 `mid`
 
 ---
+
+## [1.0.14] - 2026-08-30
+
+### 🚀 Features
+
+- *(release)* Add mise task to release
+
+### 🐛 Bug Fixes
+
+- *(player)* Restore buffering for VOD playback (#41)
+- *(home)* Allow typing 'i' in search input when focused (#39)
+- *(settings)* Allow theme list to scroll beyond visible viewport (#38)
+
+## [1.0.13] - 2026-08-03
+
+### 🚀 Features
+
+- *(login)* Add dual QR code rendering in login UI
+
+## [1.0.12] - 2026-07-14
+
+### 🚀 Features
+
+- 添加 MPV Bilibili SponsorBlock 选项以跳过广告
+- Add Bangumi functionality with timeline and ranking
+- Improve browsing and resilient playback
+- Persist CDN ranking metrics
+- Rank regional CDN catalog
+- *(player)* Optimize danmaku rendering and low-latency playback
+
+### 🐛 Bug Fixes
+
+- Harden playback and playlist lifecycle
+
+### ⚙️ Miscellaneous Tasks
+
+- *(release)* Bump version to 1.0.12 and update CHANGELOG
 
 ## [1.0.11] - 2026-04-20
 

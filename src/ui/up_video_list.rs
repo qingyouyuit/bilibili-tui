@@ -53,7 +53,13 @@ impl UpVideoListPage {
         self.grid.start_cover_downloads();
     }
 
-    pub fn set_videos(&mut self, videos: Vec<UpVideoItem>, name: String, has_more: bool, page: i32) {
+    pub fn set_videos(
+        &mut self,
+        videos: Vec<UpVideoItem>,
+        name: String,
+        has_more: bool,
+        page: i32,
+    ) {
         self.name = name;
         self.videos = videos.clone();
         self.page = page;
@@ -185,12 +191,12 @@ impl Component for UpVideoListPage {
         if keys.matches_down(key) || key == KeyCode::Down {
             if self.grid.move_down() {
                 if self.grid.is_near_bottom(2) && self.has_more && !self.loading_more {
-                    return Some(AppAction::LoadMoreUpVideos);
+                    return Some(AppAction::LoadMoreUpVideoList);
                 }
                 return Some(AppAction::None);
             }
             if self.has_more && !self.loading_more {
-                return Some(AppAction::LoadMoreUpVideos);
+                return Some(AppAction::LoadMoreUpVideoList);
             }
             return Some(AppAction::None);
         }
@@ -204,7 +210,7 @@ impl Component for UpVideoListPage {
         }
         if keys.matches_refresh(key) {
             if self.has_more && !self.loading_more {
-                return Some(AppAction::LoadMoreUpVideos);
+                return Some(AppAction::LoadMoreUpVideoList);
             }
             return Some(AppAction::None);
         }
@@ -222,9 +228,11 @@ impl Component for UpVideoListPage {
         match event.kind {
             MouseEventKind::ScrollDown => {
                 if self.grid.move_down()
-                    && self.grid.is_near_bottom(2) && self.has_more && !self.loading_more
+                    && self.grid.is_near_bottom(2)
+                    && self.has_more
+                    && !self.loading_more
                 {
-                    return Some(AppAction::LoadMoreUpVideos);
+                    return Some(AppAction::LoadMoreUpVideoList);
                 }
                 None
             }

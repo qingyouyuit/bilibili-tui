@@ -1,7 +1,7 @@
 //! Search page with video card grid display
 
 use super::video_card::{VideoCard, VideoCardGrid};
-use super::{Component, Theme};
+use super::{Component, Theme, shortcut_footer};
 use crate::api::client::ApiClient;
 use crate::api::search::{HotwordItem, SearchType, SearchVideoItem};
 use crate::application::AppAction;
@@ -14,8 +14,7 @@ use ratatui::{
 use std::time::Instant;
 
 fn sanitize_title(s: &str) -> String {
-    s.replace("<em class=\"keyword\">", "")
-        .replace("</em>", "")
+    s.replace("<em class=\"keyword\">", "").replace("</em>", "")
 }
 
 fn fix_cover_url(url: Option<&str>) -> Option<String> {
@@ -52,7 +51,7 @@ impl SearchPage {
     pub fn new() -> Self {
         Self {
             query: String::new(),
-            grid: VideoCardGrid::new(),
+            grid: VideoCardGrid::new_list(),
             loading: false,
             error_message: None,
             input_mode: true,
@@ -87,18 +86,20 @@ impl SearchPage {
         self.grid.clear();
         self.card_actions.clear();
         for item in results {
-            let action = item.bvid.as_ref().map(|bvid| {
-                AppAction::OpenVideoDetail(bvid.clone(), item.mid.unwrap_or(0))
-            });
+            let action = item
+                .bvid
+                .as_ref()
+                .map(|bvid| AppAction::OpenVideoDetail(bvid.clone(), item.mid.unwrap_or(0)));
             let card = VideoCard::new(
                 item.bvid.clone(),
-                item.mid,
+                item.aid,
                 item.display_title(),
                 item.author_name().to_string(),
                 item.format_play(),
                 item.duration.clone().unwrap_or_default(),
                 item.cover_url(),
-            );
+            )
+            .with_uploader_mid(item.mid);
             self.grid.add_card(card);
             self.card_actions.push(action.unwrap_or(AppAction::None));
         }
@@ -111,18 +112,20 @@ impl SearchPage {
 
     pub fn append_results(&mut self, results: Vec<SearchVideoItem>) {
         for item in results {
-            let action = item.bvid.as_ref().map(|bvid| {
-                AppAction::OpenVideoDetail(bvid.clone(), item.mid.unwrap_or(0))
-            });
+            let action = item
+                .bvid
+                .as_ref()
+                .map(|bvid| AppAction::OpenVideoDetail(bvid.clone(), item.mid.unwrap_or(0)));
             let card = VideoCard::new(
                 item.bvid.clone(),
-                item.mid,
+                item.aid,
                 item.display_title(),
                 item.author_name().to_string(),
                 item.format_play(),
                 item.duration.clone().unwrap_or_default(),
                 item.cover_url(),
-            );
+            )
+            .with_uploader_mid(item.mid);
             self.grid.add_card(card);
             self.card_actions.push(action.unwrap_or(AppAction::None));
         }
@@ -173,10 +176,20 @@ impl SearchPage {
     }
 
     fn parse_video_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
-        let bvid = item.get("bvid").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let bvid = item
+            .get("bvid")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
         let aid = item.get("aid").and_then(|v| v.as_i64());
-        let title = sanitize_title(item.get("title").and_then(|v| v.as_str()).unwrap_or("无标题"));
-        let author = item.get("author").and_then(|v| v.as_str()).unwrap_or("未知");
+        let title = sanitize_title(
+            item.get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("无标题"),
+        );
+        let author = item
+            .get("author")
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知");
         let play = item.get("play").and_then(|v| v.as_i64()).unwrap_or(0);
         let views = if play >= 10000 {
             format!("{:.1}万", play as f64 / 10000.0)
@@ -185,15 +198,35 @@ impl SearchPage {
         };
         let duration = item.get("duration").and_then(|v| v.as_str()).unwrap_or("-");
         let cover = fix_cover_url(item.get("pic").and_then(|v| v.as_str()));
-        let action = bvid.as_ref().map(|b| AppAction::OpenVideoDetail(b.clone(), aid.unwrap_or(0)))
+        let action = bvid
+            .as_ref()
+            .map(|b| AppAction::OpenVideoDetail(b.clone(), aid.unwrap_or(0)))
             .unwrap_or(AppAction::None);
-        (VideoCard::new(bvid, aid, title, author.to_string(), views, duration.to_string(), cover), action)
+        (
+            VideoCard::new(
+                bvid,
+                aid,
+                title,
+                author.to_string(),
+                views,
+                duration.to_string(),
+                cover,
+            ),
+            action,
+        )
     }
 
     fn parse_bangumi_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
         let season_id = item.get("season_id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let title = sanitize_title(item.get("title").and_then(|v| v.as_str()).unwrap_or("无标题"));
-        let subtitle = item.get("index_show").and_then(|v| v.as_str()).unwrap_or("");
+        let title = sanitize_title(
+            item.get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("无标题"),
+        );
+        let subtitle = item
+            .get("index_show")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let badge = item.get("badge").and_then(|v| v.as_str()).unwrap_or("");
         let score = item.get("score").and_then(|v| v.as_str()).unwrap_or("");
         let cover = fix_cover_url(item.get("cover").and_then(|v| v.as_str()));
@@ -202,14 +235,35 @@ impl SearchPage {
         } else {
             AppAction::None
         };
-        (VideoCard::new(None, None, title, subtitle.to_string(), score.to_string(), badge.to_string(), cover), action)
+        (
+            VideoCard::new(
+                None,
+                None,
+                title,
+                subtitle.to_string(),
+                score.to_string(),
+                badge.to_string(),
+                cover,
+            ),
+            action,
+        )
     }
 
     fn parse_mediaft_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
         let media_id = item.get("media_id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let season_id = item.get("season_id").and_then(|v| v.as_i64()).unwrap_or(media_id);
-        let title = sanitize_title(item.get("title").and_then(|v| v.as_str()).unwrap_or("无标题"));
-        let subtitle = item.get("index_show").and_then(|v| v.as_str()).unwrap_or("");
+        let season_id = item
+            .get("season_id")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(media_id);
+        let title = sanitize_title(
+            item.get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("无标题"),
+        );
+        let subtitle = item
+            .get("index_show")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let badge = item.get("badge").and_then(|v| v.as_str()).unwrap_or("");
         let cover = fix_cover_url(item.get("cover").and_then(|v| v.as_str()));
         let action = if season_id > 0 {
@@ -217,36 +271,91 @@ impl SearchPage {
         } else {
             AppAction::None
         };
-        (VideoCard::new(None, None, title, subtitle.to_string(), String::new(), badge.to_string(), cover), action)
+        (
+            VideoCard::new(
+                None,
+                None,
+                title,
+                subtitle.to_string(),
+                String::new(),
+                badge.to_string(),
+                cover,
+            ),
+            action,
+        )
     }
 
     fn parse_live_room_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
         let room_id = item.get("roomid").and_then(|v| v.as_i64()).unwrap_or(0);
-        let title = sanitize_title(item.get("title").and_then(|v| v.as_str()).unwrap_or("无标题"));
+        let title = sanitize_title(
+            item.get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("无标题"),
+        );
         let uname = item.get("uname").and_then(|v| v.as_str()).unwrap_or("未知");
         let cover = fix_cover_url(item.get("cover").and_then(|v| v.as_str()));
         let online = item.get("online").and_then(|v| v.as_i64()).unwrap_or(0);
         let views = format!("{}人", online);
-        let status = if item.get("live_status").and_then(|v| v.as_i64()).unwrap_or(0) == 1 { "直播中" } else { "未直播" };
+        let status = if item
+            .get("live_status")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            == 1
+        {
+            "直播中"
+        } else {
+            "未直播"
+        };
         let action = if room_id > 0 {
             AppAction::OpenLiveDetail(room_id)
         } else {
             AppAction::None
         };
-        (VideoCard::new(None, None, title, uname.to_string(), views, status.to_string(), cover), action)
+        (
+            VideoCard::new(
+                None,
+                None,
+                title,
+                uname.to_string(),
+                views,
+                status.to_string(),
+                cover,
+            ),
+            action,
+        )
     }
 
     fn parse_live_user_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
         let room_id = item.get("room_id").and_then(|v| v.as_i64()).unwrap_or(0);
         let uname = item.get("uname").and_then(|v| v.as_str()).unwrap_or("未知");
         let face = fix_cover_url(item.get("face").and_then(|v| v.as_str()));
-        let status = if item.get("live_status").and_then(|v| v.as_i64()).unwrap_or(0) == 1 { "直播中" } else { "未直播" };
+        let status = if item
+            .get("live_status")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0)
+            == 1
+        {
+            "直播中"
+        } else {
+            "未直播"
+        };
         let action = if room_id > 0 {
             AppAction::OpenLiveDetail(room_id)
         } else {
             AppAction::None
         };
-        (VideoCard::new(None, None, uname.to_string(), String::new(), String::new(), status.to_string(), face), action)
+        (
+            VideoCard::new(
+                None,
+                None,
+                uname.to_string(),
+                String::new(),
+                String::new(),
+                status.to_string(),
+                face,
+            ),
+            action,
+        )
     }
 
     fn parse_user_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
@@ -255,28 +364,72 @@ impl SearchPage {
         let fans = item.get("fans").and_then(|v| v.as_i64()).unwrap_or(0);
         let videos = item.get("videos").and_then(|v| v.as_i64()).unwrap_or(0);
         let subtitle = format!("{}粉丝 {}视频", fans, videos);
-        (VideoCard::new(None, None, name.to_string(), subtitle, String::new(), String::new(), face), AppAction::None)
+        (
+            VideoCard::new(
+                None,
+                None,
+                name.to_string(),
+                subtitle,
+                String::new(),
+                String::new(),
+                face,
+            ),
+            AppAction::None,
+        )
     }
 
     fn parse_article_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
-        let title = sanitize_title(item.get("title").and_then(|v| v.as_str()).unwrap_or("无标题"));
-        let author = item.get("author").and_then(|v| v.as_str()).unwrap_or("未知");
+        let title = sanitize_title(
+            item.get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("无标题"),
+        );
+        let author = item
+            .get("author")
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知");
         let view = item.get("view").and_then(|v| v.as_i64()).unwrap_or(0);
         let views = format!("{}阅读", view);
-        let cover = item.get("image_urls")
+        let cover = item
+            .get("image_urls")
             .and_then(|v| v.as_array())
             .and_then(|arr| arr.first())
             .and_then(|v| fix_cover_url(v.as_str()));
-        (VideoCard::new(None, None, title, author.to_string(), views, String::new(), cover), AppAction::None)
+        (
+            VideoCard::new(
+                None,
+                None,
+                title,
+                author.to_string(),
+                views,
+                String::new(),
+                cover,
+            ),
+            AppAction::None,
+        )
     }
 
     fn parse_topic_item(&self, item: &serde_json::Value) -> (VideoCard, AppAction) {
-        let topic_name = item.get("topic_name").and_then(|v| v.as_str()).unwrap_or("未知话题");
+        let topic_name = item
+            .get("topic_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知话题");
         let desc = item.get("desc").and_then(|v| v.as_str()).unwrap_or("");
         let view = item.get("view").and_then(|v| v.as_i64()).unwrap_or(0);
         let views = format!("{}浏览", view);
         let cover = fix_cover_url(item.get("cover").and_then(|v| v.as_str()));
-        (VideoCard::new(None, None, topic_name.to_string(), desc.to_string(), views, String::new(), cover), AppAction::None)
+        (
+            VideoCard::new(
+                None,
+                None,
+                topic_name.to_string(),
+                desc.to_string(),
+                views,
+                String::new(),
+                cover,
+            ),
+            AppAction::None,
+        )
     }
 
     pub fn set_error(&mut self, msg: String) {
@@ -321,10 +474,13 @@ impl SearchPage {
         self.page += 1;
 
         let st = self.search_type;
-        match api_client.search(&self.query, self.page, st.api_value()).await {
+        match api_client
+            .search(&self.query, self.page, st.api_value())
+            .await
+        {
             Ok(data) => {
                 let items = data.get("result").and_then(|r| r.as_array());
-                if items.map_or(true, |i| i.is_empty()) {
+                if items.is_none_or(|i| i.is_empty()) {
                     self.page -= 1;
                 }
                 self.append_results_json(&data);
@@ -597,25 +753,40 @@ impl Component for SearchPage {
         }
 
         // Help
-        let help_text = if self.input_mode {
-            format!(
-                "[{}] 搜索  [{}] 取消  [{}] 导航",
-                keys.confirm, keys.back, keys.nav_next_page
+        let help = if self.input_mode {
+            shortcut_footer(
+                theme,
+                [
+                    (keys.confirm.clone(), "搜索".into(), theme.success),
+                    (keys.back.clone(), "取消".into(), theme.info),
+                    (keys.nav_next_page.clone(), "导航".into(), theme.fg_accent),
+                ],
             )
         } else {
-            let type_hint = "[1-8]切换类型".to_string();
-            format!(
-                "[{}/{}] 导航  [{}] 详情  [{}] 搜索  {}",
-                keys.get_arrow_keys_display(),
-                keys.get_nav_keys_display(),
-                keys.confirm,
-                keys.search_focus,
-                type_hint,
+            shortcut_footer(
+                theme,
+                [
+                    (
+                        format!(
+                            "{}/{}",
+                            keys.get_arrow_keys_display(),
+                            keys.get_nav_keys_display()
+                        ),
+                        "导航".into(),
+                        theme.fg_accent,
+                    ),
+                    (
+                        format!("{}/{}", keys.page_up, keys.page_down),
+                        "翻页".into(),
+                        theme.fg_accent,
+                    ),
+                    (keys.confirm.clone(), "详情".into(), theme.success),
+                    (keys.search_focus.clone(), "搜索".into(), theme.info),
+                    ("1-8".into(), "切换类型".into(), theme.fg_accent),
+                ],
             )
         };
-        let help = Paragraph::new(help_text)
-            .style(Style::default().fg(theme.fg_secondary))
-            .alignment(Alignment::Center);
+        let help = Paragraph::new(help).alignment(Alignment::Center);
         frame.render_widget(help, chunks[3]);
     }
 
@@ -718,6 +889,17 @@ impl Component for SearchPage {
             }
             Some(AppAction::None)
         } else {
+            if keys.matches_page_down(key) {
+                self.grid.move_page_down();
+                if self.grid.is_near_bottom(self.grid.cached_visible_rows) && !self.loading_more {
+                    return Some(AppAction::LoadMoreSearch);
+                }
+                return Some(AppAction::None);
+            }
+            if keys.matches_page_up(key) {
+                self.grid.move_page_up();
+                return Some(AppAction::None);
+            }
             if keys.matches_down(key) {
                 self.grid.move_down();
                 // Check for pagination
@@ -738,17 +920,22 @@ impl Component for SearchPage {
                 self.grid.move_left();
                 return Some(AppAction::None);
             }
+            if key == KeyCode::Char('u')
+                && let Some(mid) = self.grid.selected_card().and_then(|card| card.uploader_mid)
+            {
+                return Some(AppAction::OpenUpPage(mid));
+            }
             if keys.matches_confirm(key) {
                 return self.card_actions.get(self.grid.selected_index).cloned();
             }
-            if let KeyCode::Char(c) = key {
-                if let Some(digit) = c.to_digit(10) {
-                    let types = SearchType::all();
-                    if digit >= 1 && digit <= types.len() as u32 {
-                        let new_type = types[digit as usize - 1];
-                        if new_type != self.search_type {
-                            return Some(AppAction::SwitchSearchType(new_type));
-                        }
+            if let KeyCode::Char(c) = key
+                && let Some(digit) = c.to_digit(10)
+            {
+                let types = SearchType::all();
+                if digit >= 1 && digit <= types.len() as u32 {
+                    let new_type = types[digit as usize - 1];
+                    if new_type != self.search_type {
+                        return Some(AppAction::SwitchSearchType(new_type));
                     }
                 }
             }

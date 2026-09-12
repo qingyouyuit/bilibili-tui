@@ -3,10 +3,11 @@ use crate::app::{App, PreviousPage};
 use crate::application::{AppAction, network};
 use crate::infrastructure::{media, persistence};
 use crate::presentation::tui::{
-    BangumiDetailPage, BangumiPage, DynamicDetailPage, DynamicPage, HistoryPage, HomePage,
-    LiveDetailPage, LivePage, LoginPage, NavItem, Page, SearchPage, SettingsPage, Theme,
-    UpVideoListPage,
+    ArticleDetailPage, BangumiDetailPage, BangumiPage, DynamicDetailPage, DynamicPage,
+    FavoritesPage, HistoryPage, HomePage, LiveDetailPage, LivePage, LoginPage, NavItem, Page,
+    SearchPage, SettingsPage, Theme, UpPage, UpVideoListPage,
 };
+use std::sync::Arc;
 
 impl App {
     fn login_required_message() -> String {
@@ -44,6 +45,7 @@ impl App {
             Page::Search(_) => Some(PreviousPage::Search),
             Page::Dynamic(_) => Some(PreviousPage::Dynamic),
             Page::History(_) => Some(PreviousPage::History),
+            Page::Favorites(_) => Some(PreviousPage::Favorites),
             Page::Live(_) => Some(PreviousPage::Live),
             Page::Bangumi(_) => Some(PreviousPage::Bangumi),
             Page::VideoDetail(page) => Some(PreviousPage::VideoDetail {
@@ -89,6 +91,20 @@ impl App {
                 self.current_page = Page::Home(HomePage::new());
                 self.init_current_page().await;
             }
+            AppAction::SwitchHomeFeed(feed) => {
+                let req_id = self.next_request_id("home");
+                // Invalidate any pending pagination result before switching.
+                self.next_request_id("home_more");
+                let use_guest_feed = self.credentials.is_none();
+                if let Page::Home(page) = &mut self.current_page {
+                    page.begin_feed_load(feed);
+                    self.send_network_command(network::NetworkCommand::LoadHome {
+                        req_id,
+                        feed,
+                        use_guest_feed,
+                    });
+                }
+            }
             AppAction::SwitchToLogin => {
                 self.current_page = Page::Login(LoginPage::new());
                 self.init_current_page().await;
@@ -112,8 +128,11 @@ impl App {
                 cid,
                 duration,
             } => {
+                let session_id = self.allocate_playback_session();
+                self.playback.session_id = None;
+                self.playback.status = crate::domain::playback::PlaybackStatus::Starting;
                 let api_client = self.api_client.clone();
-                let _ = media::play_video(
+                match media::play_video(
                     api_client,
                     &bvid,
                     aid,
@@ -121,8 +140,21 @@ impl App {
                     duration,
                     None,
                     self.credentials.as_ref(),
+                    self.config.danmaku.clone(),
+                    self.config.video_quality,
+                    self.playback_event_tx.clone(),
+                    session_id,
                 )
-                .await;
+                .await
+                {
+                    Ok(()) => {
+                        self.playback.begin_session(session_id);
+                    }
+                    Err(error) => {
+                        self.playback.status = crate::domain::playback::PlaybackStatus::Failed;
+                        self.playback.last_error = Some(format!("启动播放器失败: {error:#}"));
+                    }
+                }
             }
             AppAction::PlayVideoWithPages {
                 bvid,
@@ -132,9 +164,12 @@ impl App {
             } => {
                 // Play only the selected episode
                 if current_index < pages.len() {
+                    let session_id = self.allocate_playback_session();
+                    self.playback.session_id = None;
+                    self.playback.status = crate::domain::playback::PlaybackStatus::Starting;
                     let page = &pages[current_index];
                     let api_client = self.api_client.clone();
-                    let _ = media::play_video(
+                    match media::play_video(
                         api_client,
                         &bvid,
                         aid,
@@ -142,8 +177,21 @@ impl App {
                         page.duration,
                         Some(page.page),
                         self.credentials.as_ref(),
+                        self.config.danmaku.clone(),
+                        self.config.video_quality,
+                        self.playback_event_tx.clone(),
+                        session_id,
                     )
-                    .await;
+                    .await
+                    {
+                        Ok(()) => {
+                            self.playback.begin_session(session_id);
+                        }
+                        Err(error) => {
+                            self.playback.status = crate::domain::playback::PlaybackStatus::Failed;
+                            self.playback.last_error = Some(format!("启动播放器失败: {error:#}"));
+                        }
+                    }
                     // Update current page index in video detail page
                     if let Page::VideoDetail(detail_page) = &mut self.current_page
                         && detail_page.bvid == bvid
@@ -152,7 +200,46 @@ impl App {
                     }
                 }
             }
+            AppAction::PlayPlaylist {
+                items,
+                source,
+                start_index,
+                order,
+            } => self.start_playlist(items, source, start_index, order).await,
+            AppAction::PlayUpAll {
+                mid,
+                name,
+                video_order,
+                play_order,
+            } => {
+                self.playback.status = crate::domain::playback::PlaybackStatus::Starting;
+                let req_id = self.next_request_id("playlist_build");
+                self.send_network_command(network::NetworkCommand::BuildUpPlaylist {
+                    req_id,
+                    mid,
+                    name,
+                    video_order,
+                    play_order,
+                });
+            }
+            AppAction::PlayFavoriteAll {
+                media_id,
+                title,
+                favorite_order,
+                play_order,
+            } => {
+                self.playback.status = crate::domain::playback::PlaybackStatus::Starting;
+                let req_id = self.next_request_id("playlist_build");
+                self.send_network_command(network::NetworkCommand::BuildFavoritePlaylist {
+                    req_id,
+                    media_id,
+                    title,
+                    favorite_order,
+                    play_order,
+                });
+            }
             AppAction::NavNext => {
+                self.send_network_command(network::NetworkCommand::CancelPending);
                 // Don't navigate if on video detail page
                 if !matches!(self.current_page, Page::VideoDetail(_)) {
                     self.sidebar.next();
@@ -160,18 +247,39 @@ impl App {
                 }
             }
             AppAction::NavPrev => {
+                self.send_network_command(network::NetworkCommand::CancelPending);
                 if !matches!(self.current_page, Page::VideoDetail(_)) {
                     self.sidebar.prev();
                     self.switch_to_nav_page().await;
                 }
             }
+            AppAction::CancelPendingLoads => {
+                self.send_network_command(network::NetworkCommand::CancelPending);
+            }
             AppAction::Search(keyword) => {
-                if let Page::Search(page) = &mut self.current_page {
-                    page.query = keyword.clone();
-                    page.page = 1;
-                    page.loading = true;
-                    page.show_hot_list = false;
-                    let search_type = page.search_type;
+                let mut start_search = false;
+                let mut search_type = SearchType::Video;
+                match &mut self.current_page {
+                    Page::Home(home) => {
+                        let page = home.search_mut();
+                        page.query = keyword.clone();
+                        page.page = 1;
+                        page.loading = true;
+                        page.show_hot_list = false;
+                        search_type = page.search_type;
+                        start_search = true;
+                    }
+                    Page::Search(page) => {
+                        page.query = keyword.clone();
+                        page.page = 1;
+                        page.loading = true;
+                        page.show_hot_list = false;
+                        search_type = page.search_type;
+                        start_search = true;
+                    }
+                    _ => {}
+                }
+                if start_search {
                     let req_id = self.next_request_id("search");
                     if search_type == SearchType::Video {
                         self.send_network_command(network::NetworkCommand::Search {
@@ -205,19 +313,19 @@ impl App {
                 }
             }
             AppAction::SwitchSearchType(st) => {
-                if let Page::Search(page) = &mut self.current_page {
-                    if page.search_type != st {
-                        page.switch_type(st);
-                        if !page.query.is_empty() {
-                            let keyword = page.query.clone();
-                            let req_id = self.next_request_id("search");
-                            self.send_network_command(network::NetworkCommand::SearchWithType {
-                                req_id,
-                                keyword,
-                                page: 1,
-                                search_type: st,
-                            });
-                        }
+                if let Page::Search(page) = &mut self.current_page
+                    && page.search_type != st
+                {
+                    page.switch_type(st);
+                    if !page.query.is_empty() {
+                        let keyword = page.query.clone();
+                        let req_id = self.next_request_id("search");
+                        self.send_network_command(network::NetworkCommand::SearchWithType {
+                            req_id,
+                            keyword,
+                            page: 1,
+                            search_type: st,
+                        });
                     }
                 }
             }
@@ -239,17 +347,162 @@ impl App {
                 }
             }
             AppAction::OpenVideoDetail(bvid, aid) => {
-                self.save_previous_page();
-                // Cache current list page before navigating to video detail
-                self.cache_current_page();
                 let detail_page = crate::presentation::tui::VideoDetailPage::new(bvid.clone(), aid);
-                self.current_page = Page::VideoDetail(Box::new(detail_page));
+                let previous = std::mem::replace(
+                    &mut self.current_page,
+                    Page::VideoDetail(Box::new(detail_page)),
+                );
+                self.navigation_stack.push(previous);
                 let req_id = self.next_request_id("video_detail");
                 self.send_network_command(network::NetworkCommand::LoadVideoDetail {
                     req_id,
                     bvid,
                     aid,
                 });
+            }
+            AppAction::OpenUpPage(mid) => {
+                let page = UpPage::new(mid);
+                let previous = std::mem::replace(&mut self.current_page, Page::Up(Box::new(page)));
+                self.navigation_stack.push(previous);
+                let req_id = self.next_request_id("up_page");
+                self.send_network_command(network::NetworkCommand::LoadUpPage {
+                    req_id,
+                    mid,
+                    order: crate::api::space::SpaceVideoOrder::Latest,
+                });
+            }
+            AppAction::RefreshUpPage => {
+                if let Page::Up(page) = &mut self.current_page {
+                    page.loading = true;
+                    let mid = page.mid;
+                    let order = page.video_order;
+                    let req_id = self.next_request_id("up_page");
+                    self.send_network_command(network::NetworkCommand::LoadUpPage {
+                        req_id,
+                        mid,
+                        order,
+                    });
+                }
+            }
+            AppAction::SwitchUpVideoOrder(order) => {
+                if let Page::Up(page) = &mut self.current_page {
+                    page.loading = true;
+                    page.videos.clear();
+                    page.video_page = 1;
+                    let mid = page.mid;
+                    let req_id = self.next_request_id("up_videos");
+                    self.send_network_command(network::NetworkCommand::LoadUpVideos {
+                        req_id,
+                        mid,
+                        page: 1,
+                        order,
+                    });
+                }
+            }
+            AppAction::LoadMoreUpVideos => {
+                let command = if let Page::Up(page) = &mut self.current_page {
+                    let next_page = page.video_page + 1;
+                    page.loading_more = true;
+                    Some((page.mid, next_page, page.video_order))
+                } else {
+                    None
+                };
+                if let Some((mid, next_page, order)) = command {
+                    let req_id = self.next_request_id("up_videos");
+                    self.send_network_command(network::NetworkCommand::LoadUpVideos {
+                        req_id,
+                        mid,
+                        page: next_page,
+                        order,
+                    });
+                }
+            }
+            AppAction::OpenFavoriteFolder(media_id) => {
+                let owner_mid = match &self.current_page {
+                    Page::Up(page) => Some(page.mid),
+                    _ => None,
+                };
+                if let Some(owner_mid) = owner_mid {
+                    let req_id = self.next_request_id("favorite_resources");
+                    self.send_network_command(network::NetworkCommand::LoadFavoriteResources {
+                        req_id,
+                        owner_mid,
+                        media_id,
+                        page: 1,
+                        order: match &self.current_page {
+                            Page::Up(page) => page.favorite_order,
+                            _ => crate::api::favorite::FavoriteOrder::RecentlyFavorited,
+                        },
+                    });
+                }
+            }
+            AppAction::SwitchFavoriteOrder(order) => {
+                let command = if let Page::Up(page) = &mut self.current_page
+                    && let Some(media_id) = page.active_folder
+                {
+                    page.favorite_videos.clear();
+                    page.favorite_page = 1;
+                    Some((page.mid, media_id))
+                } else {
+                    None
+                };
+                if let Some((owner_mid, media_id)) = command {
+                    let req_id = self.next_request_id("favorite_resources");
+                    self.send_network_command(network::NetworkCommand::LoadFavoriteResources {
+                        req_id,
+                        owner_mid,
+                        media_id,
+                        page: 1,
+                        order,
+                    });
+                }
+            }
+            AppAction::LoadMoreFavoriteResources => {
+                let command = if let Page::Up(page) = &mut self.current_page
+                    && let Some(media_id) = page.active_folder
+                {
+                    let next_page = page.favorite_page + 1;
+                    page.loading_more = true;
+                    Some((page.mid, media_id, next_page))
+                } else {
+                    None
+                };
+                if let Some((owner_mid, media_id, next_page)) = command {
+                    let req_id = self.next_request_id("favorite_resources");
+                    self.send_network_command(network::NetworkCommand::LoadFavoriteResources {
+                        req_id,
+                        owner_mid,
+                        media_id,
+                        page: next_page,
+                        order: match &self.current_page {
+                            Page::Up(page) => page.favorite_order,
+                            _ => crate::api::favorite::FavoriteOrder::RecentlyFavorited,
+                        },
+                    });
+                }
+            }
+            AppAction::SelectFavoriteSource(source) => {
+                if let Page::Favorites(page) = &mut self.current_page {
+                    page.begin_source_load(source.clone());
+                    let req_id = self.next_request_id("favorites_content");
+                    self.send_network_command(network::NetworkCommand::LoadFavoritesContent {
+                        req_id,
+                        source,
+                        page: 1,
+                    });
+                }
+            }
+            AppAction::LoadMoreFavorites => {
+                if let Page::Favorites(page) = &self.current_page {
+                    let source = page.active_source.clone();
+                    let next_page = page.page + 1;
+                    let req_id = self.next_request_id("favorites_content");
+                    self.send_network_command(network::NetworkCommand::LoadFavoritesContent {
+                        req_id,
+                        source,
+                        page: next_page,
+                    });
+                }
             }
             AppAction::OpenDynamicDetail(dynamic_id) => {
                 self.save_previous_page();
@@ -263,104 +516,143 @@ impl App {
                     dynamic_id,
                 });
             }
-            AppAction::BackToList => match self.previous_page.take() {
-                Some(PreviousPage::Home) => {
-                    self.sidebar.select(NavItem::Home);
-                    // Use cached home page if available
-                    if let Some(cached) = self.cached_home.take() {
-                        self.current_page = Page::Home(cached);
-                    } else {
-                        self.current_page = Page::Home(HomePage::new());
+            AppAction::BackToList if !self.navigation_stack.is_empty() => {
+                self.auto_return_after_playback = None;
+                self.current_page = self
+                    .navigation_stack
+                    .pop()
+                    .expect("navigation stack checked as non-empty");
+            }
+            AppAction::BackToList => {
+                self.auto_return_after_playback = None;
+                match self.previous_page.take() {
+                    Some(PreviousPage::Home) => {
+                        self.sidebar.select(NavItem::Home);
+                        // Use cached home page if available
+                        if let Some(cached) = self.cached_home.take() {
+                            self.current_page = Page::Home(cached);
+                        } else {
+                            self.current_page = Page::Home(HomePage::new());
+                            self.init_current_page().await;
+                        }
+                    }
+                    Some(PreviousPage::Search) => {
+                        self.sidebar.select(NavItem::Search);
+                        if let Some(cached) = self.cached_search.take() {
+                            self.current_page = Page::Search(cached);
+                        } else {
+                            self.current_page = Page::Search(SearchPage::new());
+                            self.init_current_page().await;
+                        }
+                    }
+                    Some(PreviousPage::Dynamic) => {
+                        self.sidebar.select(NavItem::Dynamic);
+                        if let Some(cached) = self.cached_dynamic.take() {
+                            self.current_page = Page::Dynamic(cached);
+                        } else {
+                            self.current_page = Page::Dynamic(DynamicPage::new());
+                            self.init_current_page().await;
+                        }
+                    }
+                    Some(PreviousPage::History) => {
+                        self.sidebar.select(NavItem::History);
+                        if let Some(cached) = self.cached_history.take() {
+                            self.current_page = Page::History(cached);
+                        } else {
+                            self.current_page = Page::History(HistoryPage::new());
+                            self.init_current_page().await;
+                        }
+                    }
+                    Some(PreviousPage::Favorites) => {
+                        self.sidebar.select(NavItem::Favorites);
+                        let mid = self
+                            .credentials
+                            .as_ref()
+                            .and_then(|credentials| credentials.dede_user_id.parse::<i64>().ok());
+                        if let Some(mid) = mid {
+                            self.current_page = Page::Favorites(FavoritesPage::new(mid));
+                            self.init_current_page().await;
+                        }
+                    }
+                    Some(PreviousPage::Live) => {
+                        self.sidebar.select(NavItem::Live);
+                        self.current_page = Page::Live(LivePage::new());
                         self.init_current_page().await;
                     }
-                }
-                Some(PreviousPage::Search) => {
-                    self.sidebar.select(NavItem::Search);
-                    if let Some(cached) = self.cached_search.take() {
-                        self.current_page = Page::Search(cached);
-                    } else {
-                        self.current_page = Page::Search(SearchPage::new());
-                        self.init_current_page().await;
+                    Some(PreviousPage::Bangumi) => {
+                        self.sidebar.select(NavItem::Bangumi);
+                        if let Some(cached) = self.cached_bangumi.take() {
+                            self.current_page = Page::Bangumi(Box::new(cached));
+                        } else {
+                            self.current_page = Page::Bangumi(Box::<BangumiPage>::default());
+                            self.init_current_page().await;
+                        }
+                    }
+                    Some(PreviousPage::VideoDetail { bvid, aid }) => {
+                        let detail_page =
+                            crate::presentation::tui::VideoDetailPage::new(bvid.clone(), aid);
+                        self.current_page = Page::VideoDetail(Box::new(detail_page));
+                        let req_id = self.next_request_id("video_detail");
+                        self.send_network_command(network::NetworkCommand::LoadVideoDetail {
+                            req_id,
+                            bvid,
+                            aid,
+                        });
+                    }
+                    None => {
+                        // Default to home
+                        self.sidebar.select(NavItem::Home);
+                        if let Some(cached) = self.cached_home.take() {
+                            self.current_page = Page::Home(cached);
+                        } else {
+                            self.current_page = Page::Home(HomePage::new());
+                            self.init_current_page().await;
+                        }
                     }
                 }
-                Some(PreviousPage::Dynamic) => {
-                    self.sidebar.select(NavItem::Dynamic);
-                    if let Some(cached) = self.cached_dynamic.take() {
-                        self.current_page = Page::Dynamic(cached);
-                    } else {
-                        self.current_page = Page::Dynamic(DynamicPage::new());
-                        self.init_current_page().await;
-                    }
-                }
-                Some(PreviousPage::History) => {
-                    self.sidebar.select(NavItem::History);
-                    if let Some(cached) = self.cached_history.take() {
-                        self.current_page = Page::History(cached);
-                    } else {
-                        self.current_page = Page::History(HistoryPage::new());
-                        self.init_current_page().await;
-                    }
-                }
-                Some(PreviousPage::Live) => {
-                    self.sidebar.select(NavItem::Live);
-                    self.current_page = Page::Live(LivePage::new());
-                    self.init_current_page().await;
-                }
-                Some(PreviousPage::Bangumi) => {
-                    self.sidebar.select(NavItem::Bangumi);
-                    if let Some(cached) = self.cached_bangumi.take() {
-                        self.current_page = Page::Bangumi(Box::new(cached));
-                    } else {
-                        self.current_page = Page::Bangumi(Box::<BangumiPage>::default());
-                        self.init_current_page().await;
-                    }
-                }
-                Some(PreviousPage::VideoDetail { bvid, aid }) => {
-                    let detail_page = crate::presentation::tui::VideoDetailPage::new(bvid.clone(), aid);
-                    self.current_page = Page::VideoDetail(Box::new(detail_page));
-                    let req_id = self.next_request_id("video_detail");
-                    self.send_network_command(network::NetworkCommand::LoadVideoDetail {
-                        req_id,
-                        bvid,
-                        aid,
-                    });
-                }
-                None => {
-                    // Default to home
-                    self.sidebar.select(NavItem::Home);
-                    if let Some(cached) = self.cached_home.take() {
-                        self.current_page = Page::Home(cached);
-                    } else {
-                        self.current_page = Page::Home(HomePage::new());
-                        self.init_current_page().await;
-                    }
-                }
-            },
+            }
             AppAction::LoadMoreRecommendations => {
-                if let Page::Home(page) = &mut self.current_page
-                    && let Some(fresh_idx) = page.begin_load_more()
-                {
+                let request = if let Page::Home(page) = &mut self.current_page {
+                    page.begin_load_more()
+                        .map(|fresh_idx| (fresh_idx, page.feed()))
+                } else {
+                    None
+                };
+                if let Some((fresh_idx, feed)) = request {
                     let req_id = self.next_request_id("home_more");
                     self.send_network_command(network::NetworkCommand::LoadHomeMore {
                         req_id,
                         fresh_idx,
+                        feed,
                         use_guest_feed: self.credentials.is_none(),
                     });
                 }
             }
             AppAction::LoadMoreSearch => {
                 let mut command = None;
-                if let Page::Search(page) = &mut self.current_page {
-                    if page.loading_more || page.query.is_empty() || page.show_hot_list {
-                        return;
+                match &mut self.current_page {
+                    Page::Home(home) => {
+                        let page = home.search_mut();
+                        if page.loading_more || page.query.is_empty() || page.show_hot_list {
+                            return;
+                        }
+                        if page.grid.cards.len() >= page.total_results as usize {
+                            return;
+                        }
+                        page.loading_more = true;
+                        command = Some((page.query.clone(), page.page + 1, page.search_type));
                     }
-                    if page.grid.cards.len() >= page.total_results as usize {
-                        return;
+                    Page::Search(page) => {
+                        if page.loading_more || page.query.is_empty() || page.show_hot_list {
+                            return;
+                        }
+                        if page.grid.cards.len() >= page.total_results as usize {
+                            return;
+                        }
+                        page.loading_more = true;
+                        command = Some((page.query.clone(), page.page + 1, page.search_type));
                     }
-                    page.loading_more = true;
-                    let next_page = page.page + 1;
-                    let search_type = page.search_type;
-                    command = Some((page.query.clone(), next_page, search_type));
+                    _ => {}
                 }
                 if let Some((keyword, next_page, search_type)) = command {
                     let req_id = self.next_request_id("search");
@@ -420,6 +712,40 @@ impl App {
                         cursor,
                     });
                 }
+            }
+            AppAction::DeleteHistoryItems(keys) => {
+                if self.credentials.is_none() {
+                    self.apply_login_required_hint();
+                    if let Page::History(page) = &mut self.current_page {
+                        page.cancel_deletion();
+                    }
+                    return;
+                }
+                if keys.is_empty() {
+                    return;
+                }
+                let req_id = self.next_request_id("history_delete");
+                self.send_network_command(network::NetworkCommand::DeleteHistory { req_id, keys });
+            }
+            AppAction::OpenArticle(cvid) => {
+                let page = ArticleDetailPage::new(cvid);
+                let previous =
+                    std::mem::replace(&mut self.current_page, Page::ArticleDetail(Box::new(page)));
+                self.navigation_stack.push(previous);
+                let req_id = self.next_request_id("article_detail");
+                self.send_network_command(network::NetworkCommand::LoadArticle { req_id, cvid });
+            }
+            AppAction::OpenHistoryBangumi { season_id, ep_id } => {
+                let page =
+                    BangumiDetailPage::new_for_episode(season_id, ep_id, self.config.auto_play);
+                let previous =
+                    std::mem::replace(&mut self.current_page, Page::BangumiDetail(Box::new(page)));
+                self.navigation_stack.push(previous);
+                let req_id = self.next_request_id("bangumi_detail");
+                self.send_network_command(network::NetworkCommand::LoadBangumiDetail {
+                    req_id,
+                    season_id,
+                });
             }
             AppAction::SwitchToHistory => {
                 self.sidebar.select(NavItem::History);
@@ -497,6 +823,9 @@ impl App {
                     self.keybindings.clone(),
                     self.theme_id.clone(),
                     self.credentials.is_some(),
+                    self.config.danmaku.clone(),
+                    self.config.auto_play,
+                    self.config.video_quality,
                 );
                 self.current_page = Page::Settings(Box::new(page));
             }
@@ -573,6 +902,20 @@ impl App {
                 self.config.keybindings = *new_keybindings;
                 let _ = persistence::save_config(&self.config);
             }
+            AppAction::SaveDanmakuConfig(danmaku) => {
+                self.config.danmaku = *danmaku;
+                self.danmaku_config_tx
+                    .send_replace(self.config.danmaku.clone());
+                let _ = persistence::save_config(&self.config);
+            }
+            AppAction::SaveAutoPlay(enabled) => {
+                self.config.auto_play = enabled;
+                let _ = persistence::save_config(&self.config);
+            }
+            AppAction::SaveVideoQuality(quality) => {
+                self.config.video_quality = quality;
+                let _ = persistence::save_config(&self.config);
+            }
             AppAction::SwitchToLive => {
                 self.sidebar.select(NavItem::Live);
                 self.current_page = Page::Live(LivePage::new());
@@ -583,13 +926,30 @@ impl App {
                 let mut detail_page = LiveDetailPage::new(room_id);
                 let client = &self.api_client;
                 detail_page.load_room_info(client).await;
-                // Connect WebSocket for real-time messages
+                detail_page.load_history_danmaku(client).await;
                 let uid = self
                     .credentials
                     .as_ref()
                     .and_then(|c| c.dede_user_id.parse::<i64>().ok())
                     .unwrap_or(0);
-                detail_page.connect_ws(client, uid).await;
+                let existing_hub = self
+                    .live_danmaku_hub
+                    .as_ref()
+                    .filter(|hub| hub.room_id() == room_id)
+                    .cloned();
+                let hub_result = match existing_hub {
+                    Some(hub) => Ok(hub),
+                    None => crate::api::LiveDanmakuHub::connect(client, room_id, uid).await,
+                };
+                match hub_result {
+                    Ok(hub) => {
+                        detail_page.attach_danmaku_hub(Arc::clone(&hub));
+                        self.live_danmaku_hub = Some(hub);
+                    }
+                    Err(error) => {
+                        detail_page.set_ws_error(format!("WS连接失败: {error}"));
+                    }
+                }
                 self.current_page = Page::LiveDetail(Box::new(detail_page));
             }
             AppAction::RefreshLive => {
@@ -608,7 +968,50 @@ impl App {
                 }
             }
             AppAction::PlayLive { room_id, title: _ } => {
-                let _ = media::play_live(room_id).await;
+                let existing_hub = self
+                    .live_danmaku_hub
+                    .as_ref()
+                    .filter(|hub| hub.room_id() == room_id)
+                    .cloned();
+                let danmaku_hub = if existing_hub.is_some() {
+                    existing_hub
+                } else {
+                    let uid = self
+                        .credentials
+                        .as_ref()
+                        .and_then(|credentials| credentials.dede_user_id.parse::<i64>().ok())
+                        .unwrap_or(0);
+                    match crate::api::LiveDanmakuHub::connect(&self.api_client, room_id, uid).await
+                    {
+                        Ok(hub) => {
+                            self.live_danmaku_hub = Some(Arc::clone(&hub));
+                            Some(hub)
+                        }
+                        Err(error) => {
+                            if let Page::LiveDetail(page) = &mut self.current_page {
+                                page.set_ws_error(format!("WS连接失败: {error}"));
+                            }
+                            None
+                        }
+                    }
+                };
+                match media::play_live(
+                    self.api_client.clone(),
+                    room_id,
+                    danmaku_hub,
+                    self.danmaku_config_tx.subscribe(),
+                )
+                .await
+                {
+                    Ok(()) => {
+                        self.playback.status = crate::domain::playback::PlaybackStatus::Playing;
+                        self.playback.last_error = None;
+                    }
+                    Err(error) => {
+                        self.playback.status = crate::domain::playback::PlaybackStatus::Failed;
+                        self.playback.last_error = Some(format!("启动直播失败: {error:#}"));
+                    }
+                }
             }
             AppAction::SwitchToBangumi => {
                 self.sidebar.select(NavItem::Bangumi);
@@ -660,21 +1063,39 @@ impl App {
                 season_id: _,
                 title: _,
             } => {
-                let _ = media::play_bangumi_episode(ep_id, self.credentials.as_ref()).await;
+                let session_id = self.allocate_playback_session();
+                self.playback.session_id = None;
+                self.playback.status = crate::domain::playback::PlaybackStatus::Starting;
+                match media::play_bangumi_episode(
+                    self.api_client.clone(),
+                    ep_id,
+                    self.credentials.as_ref(),
+                    self.config.video_quality,
+                    self.playback_event_tx.clone(),
+                    session_id,
+                )
+                .await
+                {
+                    Ok(()) => self.playback.begin_session(session_id),
+                    Err(error) => {
+                        self.playback.status = crate::domain::playback::PlaybackStatus::Failed;
+                        self.playback.last_error = Some(format!("启动番剧播放器失败: {error:#}"));
+                    }
+                }
             }
             AppAction::OpenUpVideoList { mid, name } => {
                 self.save_previous_page();
                 self.cache_current_page();
                 let page = UpVideoListPage::new(mid, name.clone());
                 self.current_page = Page::UpVideoList(Box::new(page));
-                let req_id = self.next_request_id("up_videos");
-                self.send_network_command(network::NetworkCommand::LoadUpVideos {
+                let req_id = self.next_request_id("up_video_list");
+                self.send_network_command(network::NetworkCommand::LoadUpVideoList {
                     req_id,
                     mid,
                     page: 1,
                 });
             }
-            AppAction::LoadMoreUpVideos => {
+            AppAction::LoadMoreUpVideoList => {
                 let mut command = None;
                 if let Page::UpVideoList(page) = &mut self.current_page
                     && page.begin_load_more()
@@ -684,8 +1105,8 @@ impl App {
                     command = Some((mid, next_page));
                 }
                 if let Some((mid, next_page)) = command {
-                    let req_id = self.next_request_id("up_videos");
-                    self.send_network_command(network::NetworkCommand::LoadUpVideos {
+                    let req_id = self.next_request_id("up_video_list");
+                    self.send_network_command(network::NetworkCommand::LoadUpVideoList {
                         req_id,
                         mid,
                         page: next_page,
@@ -693,6 +1114,39 @@ impl App {
                 }
             }
             AppAction::None => {}
+        }
+    }
+
+    pub(super) async fn start_playlist(
+        &mut self,
+        items: Vec<crate::domain::playback::PlaylistItem>,
+        source: crate::domain::playback::PlaylistSource,
+        start_index: usize,
+        order: crate::domain::playback::PlayOrder,
+    ) {
+        self.playback.replace_queue(source, items.clone());
+        self.playback.order = order;
+        let _ = self.playback.play_from(start_index);
+        let session_id = self.allocate_playback_session();
+        match media::play_playlist(
+            self.api_client.clone(),
+            items,
+            order,
+            start_index,
+            self.credentials.as_ref(),
+            self.config.video_quality,
+            self.playback_event_tx.clone(),
+            session_id,
+        )
+        .await
+        {
+            Ok(()) => {
+                self.playback.begin_session(session_id);
+            }
+            Err(error) => {
+                self.playback.status = crate::domain::playback::PlaybackStatus::Failed;
+                self.playback.last_error = Some(format!("启动播放列表失败: {error:#}"));
+            }
         }
     }
 
@@ -748,13 +1202,39 @@ impl App {
                     self.init_current_page().await;
                 }
             }
+            NavItem::Favorites => {
+                let mid = self
+                    .credentials
+                    .as_ref()
+                    .and_then(|credentials| credentials.dede_user_id.parse::<i64>().ok());
+                if let Some(mid) = mid {
+                    if !matches!(self.current_page, Page::Favorites(_)) {
+                        self.current_page = Page::Favorites(FavoritesPage::new(mid));
+                        self.init_current_page().await;
+                    }
+                } else {
+                    self.current_page = Page::Settings(Box::new(SettingsPage::new(
+                        self.keybindings.clone(),
+                        self.theme_id.clone(),
+                        false,
+                        self.config.danmaku.clone(),
+                        self.config.auto_play,
+                        self.config.video_quality,
+                    )));
+                }
+            }
             NavItem::Settings => {
-                let page = SettingsPage::new(
-                    self.keybindings.clone(),
-                    self.theme_id.clone(),
-                    self.credentials.is_some(),
-                );
-                self.current_page = Page::Settings(Box::new(page));
+                if !matches!(self.current_page, Page::Settings(_)) {
+                    let page = SettingsPage::new(
+                        self.keybindings.clone(),
+                        self.theme_id.clone(),
+                        self.credentials.is_some(),
+                        self.config.danmaku.clone(),
+                        self.config.auto_play,
+                        self.config.video_quality,
+                    );
+                    self.current_page = Page::Settings(Box::new(page));
+                }
             }
             NavItem::Live => {
                 self.current_page = Page::Live(LivePage::new());
@@ -778,11 +1258,29 @@ impl App {
                 page.load_qrcode(&client).await;
             }
             Page::Home(page) => {
-                page.begin_loading();
-                let req_id = self.next_request_id("home");
+                let feed = {
+                    page.begin_loading();
+                    page.search_mut().start_hotword_loading();
+                    page.feed()
+                };
+                let home_req_id = self.next_request_id("home");
                 self.send_network_command(network::NetworkCommand::LoadHome {
-                    req_id,
+                    req_id: home_req_id,
+                    feed,
                     use_guest_feed: self.credentials.is_none(),
+                });
+                let hotword_req_id = self.next_request_id("hotwords");
+                self.send_network_command(network::NetworkCommand::LoadHotwords {
+                    req_id: hotword_req_id,
+                });
+            }
+            Page::Favorites(page) => {
+                page.loading = true;
+                let mid = page.mid;
+                let req_id = self.next_request_id("favorites_init");
+                self.send_network_command(network::NetworkCommand::LoadFavoritesInit {
+                    req_id,
+                    mid,
                 });
             }
             Page::Search(page) => {
@@ -811,6 +1309,9 @@ impl App {
             }
             Page::DynamicDetail(_) => {
                 // DynamicDetail is initialized when created
+            }
+            Page::ArticleDetail(_) => {
+                // ArticleDetail is initialized when opened from history.
             }
             Page::History(page) => {
                 if self.credentials.is_none() {
@@ -844,6 +1345,9 @@ impl App {
             }
             Page::BangumiDetail(_) => {
                 // BangumiDetail is initialized when created
+            }
+            Page::Up(_) => {
+                // UpPage is initialized by OpenUpPage with an identity-bound request.
             }
             Page::UpVideoList(_) => {
                 // UpVideoList is initialized when created

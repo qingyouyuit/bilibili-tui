@@ -69,6 +69,7 @@ pub struct SearchData {
 /// Individual video search result
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchVideoItem {
+    pub aid: Option<i64>,
     pub bvid: Option<String>,
     pub title: Option<String>,
     pub author: Option<String>,

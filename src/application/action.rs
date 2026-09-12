@@ -1,6 +1,11 @@
-use crate::api::video::VideoPage;
-use crate::infrastructure::persistence::{Credentials, Keybindings};
+use crate::api::favorite::{FavoriteOrder, FavoriteSource};
+use crate::api::history::HistoryKey;
+use crate::api::recommend::HomeFeed;
 use crate::api::search::SearchType;
+use crate::api::space::SpaceVideoOrder;
+use crate::api::video::VideoPage;
+use crate::domain::playback::{PlayOrder, PlaylistItem, PlaylistSource};
+use crate::infrastructure::persistence::{Credentials, DanmakuConfig, Keybindings, VideoQuality};
 use crate::presentation::tui::{BangumiTab, DynamicTab};
 
 /// Actions that can be triggered from UI components
@@ -12,6 +17,7 @@ pub enum AppAction {
     SwitchToHome,
     /// Refresh home page recommendations (force reload)
     RefreshHome,
+    SwitchHomeFeed(HomeFeed),
     /// Switch to login page
     SwitchToLogin,
     /// Switch to settings page
@@ -34,10 +40,29 @@ pub enum AppAction {
         pages: Vec<VideoPage>,
         current_index: usize,
     },
+    PlayPlaylist {
+        items: Vec<PlaylistItem>,
+        source: PlaylistSource,
+        start_index: usize,
+        order: PlayOrder,
+    },
+    PlayUpAll {
+        mid: i64,
+        name: String,
+        video_order: SpaceVideoOrder,
+        play_order: PlayOrder,
+    },
+    PlayFavoriteAll {
+        media_id: i64,
+        title: String,
+        favorite_order: FavoriteOrder,
+        play_order: PlayOrder,
+    },
     /// Navigate to next sidebar item
     NavNext,
     /// Navigate to previous sidebar item
     NavPrev,
+    CancelPendingLoads,
     /// Search for videos
     Search(String),
     /// Switch search type
@@ -46,6 +71,16 @@ pub enum AppAction {
     RefreshDynamic,
     /// Open video detail page (bvid, aid)
     OpenVideoDetail(String, i64),
+    /// Open an uploader's public space by member ID.
+    OpenUpPage(i64),
+    RefreshUpPage,
+    SwitchUpVideoOrder(SpaceVideoOrder),
+    LoadMoreUpVideos,
+    OpenFavoriteFolder(i64),
+    SwitchFavoriteOrder(FavoriteOrder),
+    LoadMoreFavoriteResources,
+    SelectFavoriteSource(FavoriteSource),
+    LoadMoreFavorites,
     /// Open dynamic detail page for image/text dynamics (dynamic_id)
     OpenDynamicDetail(String),
     /// Go back to previous page
@@ -60,6 +95,12 @@ pub enum AppAction {
     LoadMoreDynamic,
     /// Load more history items
     LoadMoreHistory,
+    DeleteHistoryItems(Vec<HistoryKey>),
+    OpenArticle(i64),
+    OpenHistoryBangumi {
+        season_id: i64,
+        ep_id: i64,
+    },
     /// Load more comments in video detail page
     LoadMoreComments,
     /// Toggle comment replies expansion
@@ -74,6 +115,11 @@ pub enum AppAction {
     SetTheme(String),
     /// Save keybindings to config
     SaveKeybindings(Box<Keybindings>),
+    /// Save live/video danmaku rendering settings.
+    SaveDanmakuConfig(Box<DanmakuConfig>),
+    /// Save the auto-play-on-video-open preference.
+    SaveAutoPlay(bool),
+    SaveVideoQuality(VideoQuality),
     /// Logout and return to login page
     Logout,
     /// Like or unlike a comment (oid, rpid, comment_type)
@@ -98,7 +144,10 @@ pub enum AppAction {
     /// Load more live rooms
     LoadMoreLive,
     /// Play live stream
-    PlayLive { room_id: i64, title: String },
+    PlayLive {
+        room_id: i64,
+        title: String,
+    },
     /// Switch to bangumi page
     SwitchToBangumi,
     /// Refresh bangumi timeline
@@ -120,10 +169,8 @@ pub enum AppAction {
         mid: i64,
         name: String,
     },
-    /// Load more UP主 videos
-    LoadMoreUpVideos,
+    /// Load more videos in our UP主 video list page
+    LoadMoreUpVideoList,
     /// No action
     None,
 }
-
-

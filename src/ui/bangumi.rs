@@ -1,7 +1,7 @@
 //! Bangumi page with rank list
 
 use super::video_card::{VideoCard, VideoCardGrid};
-use super::{Component, Theme};
+use super::{Component, Theme, shortcut_footer};
 use crate::api::bangumi::SeasonRankItem;
 use crate::api::client::ApiClient;
 use crate::application::AppAction;
@@ -119,58 +119,29 @@ impl BangumiPage {
     }
 
     fn render_footer(&self, frame: &mut Frame, area: Rect, theme: &Theme, keys: &Keybindings) {
-        let help_line = Line::from(vec![
-            Span::styled(" [", Style::default().fg(theme.fg_secondary)),
-            Span::styled(
-                keys.get_arrow_keys_display(),
-                Style::default()
-                    .fg(theme.fg_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("/", Style::default().fg(theme.fg_secondary)),
-            Span::styled(
-                keys.get_nav_keys_display(),
-                Style::default()
-                    .fg(theme.fg_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("] ", Style::default().fg(theme.fg_secondary)),
-            Span::styled("导航", Style::default().fg(theme.fg_secondary)),
-            Span::styled("  [", Style::default().fg(theme.fg_secondary)),
-            Span::styled(
-                &keys.confirm,
-                Style::default()
-                    .fg(theme.success)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("] ", Style::default().fg(theme.fg_secondary)),
-            Span::styled("详情", Style::default().fg(theme.fg_secondary)),
-            Span::styled("  [", Style::default().fg(theme.fg_secondary)),
-            Span::styled(
-                &keys.refresh,
-                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("] ", Style::default().fg(theme.fg_secondary)),
-            Span::styled("刷新", Style::default().fg(theme.fg_secondary)),
-            Span::styled("  [", Style::default().fg(theme.fg_secondary)),
-            Span::styled(
-                "1",
-                Style::default()
-                    .fg(theme.fg_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("]", Style::default().fg(theme.fg_secondary)),
-            Span::styled("番剧", Style::default().fg(theme.fg_secondary)),
-            Span::styled("  [", Style::default().fg(theme.fg_secondary)),
-            Span::styled(
-                "2",
-                Style::default()
-                    .fg(theme.fg_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("]", Style::default().fg(theme.fg_secondary)),
-            Span::styled("国创", Style::default().fg(theme.fg_secondary)),
-        ]);
+        let help_line = shortcut_footer(
+            theme,
+            [
+                (
+                    format!(
+                        "{}/{}",
+                        keys.get_arrow_keys_display(),
+                        keys.get_nav_keys_display()
+                    ),
+                    "导航".into(),
+                    theme.fg_accent,
+                ),
+                (
+                    format!("{}/{}", keys.page_up, keys.page_down),
+                    "翻页".into(),
+                    theme.fg_accent,
+                ),
+                (keys.confirm.clone(), "详情".into(), theme.success),
+                (keys.refresh.clone(), "刷新".into(), theme.info),
+                ("1".into(), "番剧".into(), theme.fg_accent),
+                ("2".into(), "国创".into(), theme.fg_accent),
+            ],
+        );
         let help = Paragraph::new(help_line).alignment(Alignment::Center);
         frame.render_widget(help, area);
     }
@@ -204,13 +175,13 @@ impl Component for BangumiPage {
                     .add_modifier(Modifier::BOLD),
             ),
         ]))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(theme.border_subtle)),
-            )
-            .alignment(Alignment::Center);
+        .block(
+            Block::default()
+                .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(theme.border_subtle)),
+        )
+        .alignment(Alignment::Center);
         frame.render_widget(title, chunks[0]);
 
         // Tab bar
@@ -290,6 +261,15 @@ impl Component for BangumiPage {
         }
 
         if self.loading {
+            return Some(AppAction::None);
+        }
+
+        if keys.matches_page_down(key) {
+            self.index_grid.move_page_down();
+            return Some(AppAction::None);
+        }
+        if keys.matches_page_up(key) {
+            self.index_grid.move_page_up();
             return Some(AppAction::None);
         }
 

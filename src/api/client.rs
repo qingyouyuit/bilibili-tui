@@ -1,11 +1,14 @@
 //! Bilibili API Client with cookie management and WBI signing
 
 use super::wbi;
-use crate::storage::Credentials;
-use anyhow::{Result, anyhow};
+use crate::storage::{Credentials, VideoQuality};
+use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use reqwest::header::{COOKIE, HeaderMap, HeaderValue, REFERER, USER_AGENT};
 use serde::Deserialize;
+use std::fs::{self, OpenOptions};
+use std::io::Read;
+use std::io::Write;
 use std::sync::RwLock;
 
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
@@ -47,10 +50,64 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
+    fn safe_url(url: &str) -> String {
+        reqwest::Url::parse(url)
+            .map(|url| {
+                format!(
+                    "{}://{}{}",
+                    url.scheme(),
+                    url.host_str().unwrap_or(""),
+                    url.path()
+                )
+            })
+            .unwrap_or_else(|_| "<invalid URL>".to_string())
+    }
+
+    fn write_decode_diagnostic(url: &str, error: &serde_json::Error) {
+        let Some(mut dir) = dirs::config_dir() else {
+            return;
+        };
+        dir.push("bilibili-tui");
+        if fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let safe_url = Self::safe_url(url);
+        let log_path = dir.join("debug.log");
+        let mut options = OpenOptions::new();
+        options.create(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        if let Ok(mut log) = options.open(&log_path) {
+            let _ = writeln!(
+                log,
+                "[{timestamp}] JSON decode failed\nURL: {safe_url}\nError: {error}\n"
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&log_path, fs::Permissions::from_mode(0o600));
+            }
+        }
+    }
+
     pub fn new() -> Self {
+        // Older builds persisted complete failed API responses. Remove that
+        // legacy diagnostic because it can contain account-specific data.
+        if let Some(mut path) = dirs::config_dir() {
+            path.push("bilibili-tui");
+            path.push("last-decode-error.json");
+            let _ = fs::remove_file(path);
+        }
         Self {
             client: Client::builder()
                 .default_headers(Self::default_headers())
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(20))
                 .build()
                 .expect("Failed to create HTTP client"),
             cookies: RwLock::new(None),
@@ -104,13 +161,59 @@ impl ApiClient {
 
     /// Make a GET request
     pub async fn get<T: for<'de> Deserialize<'de>>(&self, url: &str) -> Result<ApiResponse<T>> {
-        let mut req = self.client.get(url);
-        if let Some(ref cookies) = *self.cookies.read().expect("cookies lock poisoned") {
-            req = req.header(COOKIE, cookies.as_str());
+        // A Bilibili CDN connection can occasionally close while the compressed
+        // response body is being read. Retrying a read-only GET once prevents a
+        // transient truncated body from surfacing as a dynamic-page failure.
+        let safe_url = Self::safe_url(url);
+        for attempt in 0..2 {
+            let mut req = self.client.get(url);
+            if let Some(ref cookies) = *self.cookies.read().expect("cookies lock poisoned") {
+                req = req.header(COOKIE, cookies.as_str());
+            }
+
+            let resp = match req.send().await {
+                Ok(resp) => resp,
+                Err(_) if attempt == 0 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("request failed for {safe_url}"));
+                }
+            };
+            let status = resp.status();
+            let body = match resp.bytes().await {
+                Ok(body) => body,
+                Err(_) if attempt == 0 => continue,
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to read response body from {safe_url}"));
+                }
+            };
+
+            if !status.is_success() {
+                if attempt == 0 && (status.is_server_error() || status.as_u16() == 429) {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    continue;
+                }
+                return Err(anyhow!("HTTP {status} from {safe_url}"));
+            }
+
+            let response: ApiResponse<T> = serde_json::from_slice(&body).map_err(|error| {
+                Self::write_decode_diagnostic(url, &error);
+                anyhow!("invalid JSON response from {safe_url}: {error}")
+            })?;
+            if response.code != 0 {
+                return Err(anyhow!(
+                    "API error ({}): {}",
+                    response.code,
+                    response.message
+                ));
+            }
+            return Ok(response);
         }
-        let resp = req.send().await?;
-        let api_resp: ApiResponse<T> = resp.json().await?;
-        Ok(api_resp)
+
+        unreachable!("GET retry loop always returns")
     }
 
     /// Make a GET request and return raw JSON
@@ -119,7 +222,7 @@ impl ApiClient {
         if let Some(ref cookies) = *self.cookies.read().expect("cookies lock poisoned") {
             req = req.header(COOKIE, cookies.as_str());
         }
-        let resp = req.send().await?;
+        let resp = req.send().await?.error_for_status()?;
         let value: serde_json::Value = resp.json().await?;
         Ok(value)
     }
@@ -165,8 +268,15 @@ impl ApiClient {
         }; // 锁在此处释放
 
         req = req.form(&params);
-        let resp = req.send().await?;
+        let resp = req.send().await?.error_for_status()?;
         let api_resp: ApiResponse<T> = resp.json().await?;
+        if api_resp.code != 0 {
+            return Err(anyhow!(
+                "API error ({}): {}",
+                api_resp.code,
+                api_resp.message
+            ));
+        }
         Ok(api_resp)
     }
 
@@ -272,7 +382,7 @@ impl ApiClient {
             req = req.header(COOKIE, cookies.as_str());
         }
 
-        let resp = req.send().await?;
+        let resp = req.send().await?.error_for_status()?;
 
         // Extract cookies from response headers
         let mut new_cookies = Vec::new();
@@ -329,7 +439,7 @@ impl ApiClient {
             req = req.header(COOKIE, cookies.as_str());
         }
 
-        let value: serde_json::Value = req.send().await?.json().await?;
+        let value: serde_json::Value = req.send().await?.error_for_status()?.json().await?;
         let code = value
             .get("code")
             .and_then(|v| v.as_i64())
@@ -348,81 +458,78 @@ impl ApiClient {
             .and_then(|l| l.as_array())
             .cloned()
             .unwrap_or_default();
+        Ok(parse_home_videos(list))
+    }
 
-        let videos = list
-            .into_iter()
-            .filter_map(|item| {
-                let bvid = item
-                    .get("bvid")
-                    .and_then(|v| v.as_str())
-                    .map(ToOwned::to_owned);
-                let aid = item
-                    .get("aid")
-                    .and_then(|v| v.as_i64())
-                    .or_else(|| item.get("id").and_then(|v| v.as_i64()))
+    pub async fn get_home_feed(
+        &self,
+        feed: super::recommend::HomeFeed,
+        page: i32,
+        page_size: i32,
+    ) -> Result<Vec<super::recommend::VideoItem>> {
+        use super::recommend::HomeFeed;
+        let path = match feed {
+            HomeFeed::Recommended => {
+                // The authenticated homepage recommendation is selected by the
+                // network worker; this fallback keeps the public helper useful
+                // for callers without a login context.
+                return self.get_popular_videos(page, page_size).await;
+            }
+            HomeFeed::Popular => {
+                return self.get_popular_videos(page, page_size).await;
+            }
+            HomeFeed::Weekly => {
+                let list_url = format!(
+                    "{}/x/web-interface/popular/series/list",
+                    BilibiliApiDomain::Main.as_str()
+                );
+                let list: ApiResponse<serde_json::Value> = self
+                    .get_with_wbi(&list_url, vec![("web_location", "333.934".to_string())])
+                    .await?;
+                let number = list
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("list"))
+                    .and_then(|list| list.as_array())
+                    .and_then(|list| list.first())
+                    .and_then(|item| item.get("number"))
+                    .and_then(|number| number.as_i64())
+                    .ok_or_else(|| anyhow!("每周必看期数为空"))?;
+                let one_url = format!(
+                    "{}/x/web-interface/popular/series/one",
+                    BilibiliApiDomain::Main.as_str()
+                );
+                let value: ApiResponse<serde_json::Value> = self
+                    .get_with_wbi(
+                        &one_url,
+                        vec![
+                            ("number", number.to_string()),
+                            ("web_location", "333.934".to_string()),
+                        ],
+                    )
+                    .await?;
+                let list = value
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("list"))
+                    .and_then(|list| list.as_array())
+                    .cloned()
                     .unwrap_or_default();
-
-                if bvid.is_none() || aid <= 0 {
-                    return None;
-                }
-
-                let owner = item.get("owner").and_then(|o| {
-                    let mid = o.get("mid").and_then(|v| v.as_i64()).unwrap_or_default();
-                    let name = o
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("-")
-                        .to_string();
-                    if mid == 0 && name == "-" {
-                        None
-                    } else {
-                        Some(super::recommend::VideoOwner {
-                            mid,
-                            name,
-                            face: o
-                                .get("face")
-                                .and_then(|v| v.as_str())
-                                .map(ToOwned::to_owned),
-                        })
-                    }
-                });
-
-                let stat = item.get("stat").map(|s| super::recommend::VideoStat {
-                    view: s.get("view").and_then(|v| v.as_i64()),
-                    like: s.get("like").and_then(|v| v.as_i64()),
-                    danmaku: s.get("danmaku").and_then(|v| v.as_i64()),
-                });
-
-                Some(super::recommend::VideoItem {
-                    id: aid,
-                    bvid,
-                    cid: item.get("cid").and_then(|v| v.as_i64()),
-                    goto: item
-                        .get("goto")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("av")
-                        .to_string(),
-                    uri: item
-                        .get("uri")
-                        .and_then(|v| v.as_str())
-                        .map(ToOwned::to_owned),
-                    pic: item
-                        .get("pic")
-                        .and_then(|v| v.as_str())
-                        .map(ToOwned::to_owned),
-                    title: item
-                        .get("title")
-                        .and_then(|v| v.as_str())
-                        .map(ToOwned::to_owned),
-                    duration: item.get("duration").and_then(|v| v.as_i64()),
-                    pubdate: item.get("pubdate").and_then(|v| v.as_i64()),
-                    owner,
-                    stat,
-                })
-            })
-            .collect();
-
-        Ok(videos)
+                return Ok(parse_home_videos(list));
+            }
+            HomeFeed::Ranking => "/x/web-interface/ranking/v2?rid=0&type=all".to_string(),
+            HomeFeed::MustWatch => "/x/web-interface/popular/precious".to_string(),
+        };
+        let url = format!("{}{}", BilibiliApiDomain::Main.as_str(), path);
+        let value: ApiResponse<serde_json::Value> = self.get(&url).await?;
+        let list = value
+            .data
+            .as_ref()
+            .and_then(|data| data.get("list"))
+            .and_then(|list| list.as_array())
+            .cloned()
+            .unwrap_or_default();
+        Ok(parse_home_videos(list))
     }
 
     // Video API
@@ -435,6 +542,286 @@ impl ApiClient {
         let resp: ApiResponse<super::video::VideoInfo> = self.get(&url).await?;
         resp.data
             .ok_or_else(|| anyhow::anyhow!("No data in video info response"))
+    }
+
+    pub async fn get_play_url(
+        &self,
+        bvid: &str,
+        cid: i64,
+        quality: VideoQuality,
+    ) -> Result<super::cdn::PlayUrlData> {
+        let url = self.build_url(BilibiliApiDomain::Main, "/x/player/wbi/playurl");
+        let resp: ApiResponse<super::cdn::PlayUrlData> = self
+            .get_with_wbi(
+                &url,
+                vec![
+                    ("bvid", bvid.to_string()),
+                    ("cid", cid.to_string()),
+                    ("qn", quality.qn().to_string()),
+                    ("fnver", "0".to_string()),
+                    ("fnval", "4048".to_string()),
+                    ("fourk", "1".to_string()),
+                ],
+            )
+            .await?;
+        if resp.code != 0 {
+            return Err(anyhow!("playurl API error {}: {}", resp.code, resp.message));
+        }
+        resp.data
+            .ok_or_else(|| anyhow!("playurl response has no data"))
+    }
+
+    pub async fn get_bangumi_play_url(
+        &self,
+        ep_id: i64,
+        quality: VideoQuality,
+    ) -> Result<super::cdn::PlayUrlData> {
+        let url = format!(
+            "{}/pgc/player/web/v2/playurl?ep_id={ep_id}&qn={}&otype=json&fnval=4048&fourk=1&from_client=BROWSER&is_main_page=false&need_fragment=false&isGaiaAvoided=true&web_location=1315873",
+            BilibiliApiDomain::Main.as_str(),
+            quality.qn()
+        );
+        let value = self.get_json(&url).await?;
+        Self::parse_bangumi_play_url(&value)
+    }
+
+    fn parse_bangumi_play_url(value: &serde_json::Value) -> Result<super::cdn::PlayUrlData> {
+        let mut payload = value;
+        if payload.get("code").is_some() {
+            Self::check_code(payload)?;
+        }
+        if let Some(raw) = payload.get("raw") {
+            payload = raw;
+        }
+        if let Some(data) = payload.get("data") {
+            payload = data;
+            if payload.get("code").is_some() {
+                Self::check_code(payload)?;
+            }
+        }
+        if let Some(result) = payload.get("result") {
+            payload = result;
+        }
+        if let Some(video_info) = payload.get("video_info") {
+            payload = video_info;
+        }
+        serde_json::from_value(payload.clone()).context("invalid bangumi playurl response")
+    }
+
+    pub async fn get_video_danmaku(&self, cid: i64) -> Result<Vec<super::danmaku::VideoDanmaku>> {
+        let url = format!("https://comment.bilibili.com/{cid}.xml");
+        let response = self.client.get(&url).send().await?.error_for_status()?;
+        let encoding = response
+            .headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let bytes = response.bytes().await?;
+        let body = if encoding.contains("deflate") {
+            let mut decoded = Vec::new();
+            if flate2::read::DeflateDecoder::new(bytes.as_ref())
+                .read_to_end(&mut decoded)
+                .is_err()
+            {
+                decoded.clear();
+                flate2::read::ZlibDecoder::new(bytes.as_ref()).read_to_end(&mut decoded)?;
+            }
+            String::from_utf8(decoded)?
+        } else {
+            String::from_utf8(bytes.to_vec())?
+        };
+        super::danmaku::parse_xml(&body)
+    }
+
+    /// Load the public profile shown at space.bilibili.com/{mid}.
+    pub async fn get_space_info(&self, mid: i64) -> Result<super::space::SpaceInfo> {
+        let url = self.build_url(BilibiliApiDomain::Main, "/x/space/wbi/acc/info");
+        let resp: ApiResponse<super::space::SpaceInfo> = self
+            .get_with_wbi(&url, vec![("mid", mid.to_string())])
+            .await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "space info API error {}: {}",
+                resp.code,
+                resp.message
+            ));
+        }
+        resp.data
+            .ok_or_else(|| anyhow!("space info response has no data"))
+    }
+
+    pub async fn get_relation_stat(&self, mid: i64) -> Result<super::space::RelationStat> {
+        let url = format!(
+            "{}/x/relation/stat?vmid={mid}",
+            BilibiliApiDomain::Main.as_str()
+        );
+        let resp: ApiResponse<super::space::RelationStat> = self.get(&url).await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "relation API error {}: {}",
+                resp.code,
+                resp.message
+            ));
+        }
+        resp.data
+            .ok_or_else(|| anyhow!("relation response has no data"))
+    }
+
+    /// Load an UP's submissions using the same `pubdate`/`click` order values
+    /// as the web space's 最新发布/最多播放 controls.
+    pub async fn get_space_videos(
+        &self,
+        mid: i64,
+        page: i32,
+        page_size: i32,
+        order: super::space::SpaceVideoOrder,
+    ) -> Result<super::space::SpaceVideoData> {
+        let url = self.build_url(BilibiliApiDomain::Main, "/x/space/wbi/arc/search");
+        let params = vec![
+            ("mid", mid.to_string()),
+            ("pn", page.to_string()),
+            ("ps", page_size.to_string()),
+            ("tid", "0".to_string()),
+            ("special_type", String::new()),
+            ("order", order.api_value().to_string()),
+            ("index", "0".to_string()),
+            ("keyword", String::new()),
+            ("order_avoided", "true".to_string()),
+            ("platform", "web".to_string()),
+        ];
+        let resp: ApiResponse<super::space::SpaceVideoData> =
+            self.get_with_wbi(&url, params).await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "space videos API error {}: {}",
+                resp.code,
+                resp.message
+            ));
+        }
+        resp.data
+            .ok_or_else(|| anyhow!("space videos response has no data"))
+    }
+
+    /// List public favorite folders created by a user. Private folders remain
+    /// visible only when the authenticated account has permission.
+    pub async fn get_favorite_folders(
+        &self,
+        owner_mid: i64,
+    ) -> Result<Vec<super::favorite::FavoriteFolder>> {
+        let url = format!(
+            "{}/x/v3/fav/folder/created/list-all?up_mid={owner_mid}",
+            BilibiliApiDomain::Main.as_str()
+        );
+        let resp: ApiResponse<super::favorite::FavoriteFolderData> = self.get(&url).await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "favorite folders API error {}: {}",
+                resp.code,
+                resp.message
+            ));
+        }
+        Ok(resp.data.map(|data| data.list).unwrap_or_default())
+    }
+
+    /// Load one page of a favorite folder in the folder's web order.
+    pub async fn get_favorite_resources(
+        &self,
+        media_id: i64,
+        page: i32,
+        page_size: i32,
+        order: super::favorite::FavoriteOrder,
+    ) -> Result<super::favorite::FavoriteResourceData> {
+        let url = format!(
+            "{}/x/v3/fav/resource/list?media_id={media_id}&pn={page}&ps={page_size}&order={}&type=0&tid=0&platform=web",
+            BilibiliApiDomain::Main.as_str(),
+            order.api_value()
+        );
+        let resp: ApiResponse<super::favorite::FavoriteResourceData> = self.get(&url).await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "favorite resources API error {}: {}",
+                resp.code,
+                resp.message
+            ));
+        }
+        resp.data
+            .ok_or_else(|| anyhow!("favorite resources response has no data"))
+    }
+
+    pub async fn get_watch_later(
+        &self,
+        page: i32,
+        page_size: i32,
+    ) -> Result<super::favorite::WatchLaterData> {
+        let url = self.build_url(BilibiliApiDomain::Main, "/x/v2/history/toview/web");
+        let resp: ApiResponse<super::favorite::WatchLaterData> = self
+            .get_with_wbi(
+                &url,
+                vec![
+                    ("pn", page.to_string()),
+                    ("ps", page_size.to_string()),
+                    ("viewed", "0".to_string()),
+                    ("key", String::new()),
+                    ("asc", "false".to_string()),
+                    ("need_split", "true".to_string()),
+                ],
+            )
+            .await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "watch later API error {}: {}",
+                resp.code,
+                resp.message
+            ));
+        }
+        resp.data
+            .ok_or_else(|| anyhow!("watch later response has no data"))
+    }
+
+    pub async fn get_collected_folders(
+        &self,
+        mid: i64,
+        page: i32,
+        page_size: i32,
+    ) -> Result<super::favorite::CollectedFolderData> {
+        let url = format!(
+            "{}/x/v3/fav/folder/collected/list?pn={page}&ps={page_size}&up_mid={mid}&platform=web",
+            BilibiliApiDomain::Main.as_str()
+        );
+        let resp: ApiResponse<super::favorite::CollectedFolderData> = self.get(&url).await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "collected folders API error {}: {}",
+                resp.code,
+                resp.message
+            ));
+        }
+        resp.data
+            .ok_or_else(|| anyhow!("collected folders response has no data"))
+    }
+
+    pub async fn get_collected_season_videos(
+        &self,
+        mid: i64,
+        season_id: i64,
+        page: i32,
+        page_size: i32,
+    ) -> Result<super::favorite::SeasonArchivesData> {
+        let url = format!(
+            "{}/x/polymer/web-space/seasons_archives_list?mid={mid}&season_id={season_id}&sort_reverse=false&page_num={page}&page_size={page_size}",
+            BilibiliApiDomain::Main.as_str()
+        );
+        let resp: ApiResponse<super::favorite::SeasonArchivesData> = self.get(&url).await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "season archives API error {}: {}",
+                resp.code,
+                resp.message
+            ));
+        }
+        resp.data
+            .ok_or_else(|| anyhow!("season archives response has no data"))
     }
 
     // Search API
@@ -490,7 +877,7 @@ impl ApiClient {
             req = req.header(COOKIE, cookies.as_str());
         }
 
-        let resp = req.send().await?;
+        let resp = req.send().await?.error_for_status()?;
         let data: super::search::HotwordResponse = resp.json().await?;
 
         if let Some(code) = data.code
@@ -515,7 +902,10 @@ impl ApiClient {
         Ok(result)
     }
 
-    pub async fn get_bangumi_rank(&self, season_type: i32) -> Result<Vec<super::bangumi::SeasonRankItem>> {
+    pub async fn get_bangumi_rank(
+        &self,
+        season_type: i32,
+    ) -> Result<Vec<super::bangumi::SeasonRankItem>> {
         let url = format!(
             "{}/pgc/web/rank/list?day=3&season_type={}",
             BilibiliApiDomain::Main.as_str(),
@@ -794,10 +1184,7 @@ impl ApiClient {
         page: i32,
         page_size: i32,
     ) -> Result<super::video::UpVideoListData> {
-        let url = self.build_url(
-            BilibiliApiDomain::Main,
-            "/x/space/wbi/arc/search",
-        );
+        let url = self.build_url(BilibiliApiDomain::Main, "/x/space/wbi/arc/search");
 
         let params = vec![
             ("mid", mid.to_string()),
@@ -808,35 +1195,84 @@ impl ApiClient {
         let value = self.get_with_wbi_json(&url, params).await?;
         Self::check_code(&value)?;
 
-        let data = value.get("data").ok_or_else(|| anyhow!("API 返回缺少 data 字段"))?;
-        let list = data.get("list").and_then(|l| l.get("vlist")).and_then(|v| v.as_array()).cloned().unwrap_or_default();
-        let page_obj = data.get("page").ok_or_else(|| anyhow!("API 返回缺少 page 字段"))?;
+        let data = value
+            .get("data")
+            .ok_or_else(|| anyhow!("API 返回缺少 data 字段"))?;
+        let list = data
+            .get("list")
+            .and_then(|l| l.get("vlist"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let page_obj = data
+            .get("page")
+            .ok_or_else(|| anyhow!("API 返回缺少 page 字段"))?;
 
         let pn = page_obj.get("pn").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
         let ps = page_obj.get("ps").and_then(|v| v.as_i64()).unwrap_or(30) as i32;
         let count = page_obj.get("count").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
 
-        let vlist = list.into_iter().filter_map(|item| {
-            let bvid = item.get("bvid")?.as_str()?.to_string();
-            let aid = item.get("aid")?.as_i64()?;
-            let title = item.get("title")?.as_str()?.to_string();
-            let pic = item.get("pic").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let play = item.get("play").and_then(|v| v.as_i64()).unwrap_or(0);
-            let length = item.get("length").and_then(|v| v.as_str()).unwrap_or("--:--").to_string();
-            let video_review = item.get("video_review").and_then(|v| v.as_i64()).unwrap_or(0);
-            let author = item.get("author")?.as_str()?.to_string();
-            let mid = item.get("mid")?.as_i64()?;
-            let created = item.get("created").and_then(|v| v.as_i64()).unwrap_or(0);
+        let vlist = list
+            .into_iter()
+            .filter_map(|item| {
+                let bvid = item.get("bvid")?.as_str()?.to_string();
+                let aid = item.get("aid")?.as_i64()?;
+                let title = item.get("title")?.as_str()?.to_string();
+                let pic = item
+                    .get("pic")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let play = item.get("play").and_then(|v| v.as_i64()).unwrap_or(0);
+                let length = item
+                    .get("length")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("--:--")
+                    .to_string();
+                let video_review = item
+                    .get("video_review")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let author = item.get("author")?.as_str()?.to_string();
+                let mid = item.get("mid")?.as_i64()?;
+                let created = item.get("created").and_then(|v| v.as_i64()).unwrap_or(0);
 
-            Some(super::video::UpVideoItem {
-                aid, bvid, title, pic, play, length, video_review, author, mid, created,
+                Some(super::video::UpVideoItem {
+                    aid,
+                    bvid,
+                    title,
+                    pic,
+                    play,
+                    length,
+                    video_review,
+                    author,
+                    mid,
+                    created,
+                })
             })
-        }).collect();
+            .collect();
 
         Ok(super::video::UpVideoListData {
             vlist,
             page: super::video::UpVideoPageInfo { pn, ps, count },
         })
+    }
+
+    pub async fn delete_history_item(&self, key: &super::history::HistoryKey) -> Result<()> {
+        let url = self.build_url(BilibiliApiDomain::Main, "/x/v2/history/delete");
+        let _: ApiResponse<serde_json::Value> =
+            self.post(&url, vec![("kid", key.api_value())]).await?;
+        Ok(())
+    }
+
+    pub async fn get_article(&self, cvid: i64) -> Result<super::article::ArticleData> {
+        let url = format!(
+            "{}/x/article/view?id={cvid}",
+            BilibiliApiDomain::Main.as_str()
+        );
+        let resp: ApiResponse<super::article::ArticleData> = self.get(&url).await?;
+        resp.data
+            .ok_or_else(|| anyhow!("article response has no data"))
     }
 
     // ========== Comment Action APIs ==========
@@ -981,13 +1417,108 @@ impl ApiClient {
             req = req.header(COOKIE, cookies.as_str());
         }
 
-        let resp = req.send().await?;
+        let resp = req.send().await?.error_for_status()?;
         let api_resp: ApiResponse<super::live::LiveRecommendData> = resp.json().await?;
 
         Ok(api_resp
             .data
             .map(|d| d.recommend_room_list)
             .unwrap_or_default())
+    }
+
+    /// Match the web live homepage: followed live rooms first, recommendations second.
+    pub async fn get_live_home_rooms(&self) -> Result<Vec<super::live::LiveRoom>> {
+        const URL: &str = "https://api.live.bilibili.com/xlive/web-interface/v1/index/getList";
+        let resp: ApiResponse<super::live::LiveHomeData> = self
+            .get_with_wbi(
+                URL,
+                vec![
+                    ("platform", "web".to_string()),
+                    ("web_location", "444.7".to_string()),
+                ],
+            )
+            .await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "live homepage API error {}: {}",
+                resp.code,
+                resp.message
+            ));
+        }
+        let data = resp
+            .data
+            .ok_or_else(|| anyhow!("live homepage response has no data"))?;
+        Ok(data.followed_then_recommended())
+    }
+
+    async fn get_live_play_info(
+        &self,
+        room_id: i64,
+        quality: i64,
+    ) -> Result<super::live::LivePlayInfoData> {
+        const URL: &str = "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo";
+        let resp: ApiResponse<super::live::LivePlayInfoData> = self
+            .get_with_wbi(
+                URL,
+                vec![
+                    ("room_id", room_id.to_string()),
+                    ("protocol", "0,1".to_string()),
+                    ("format", "0,1,2".to_string()),
+                    ("codec", "0,1,2".to_string()),
+                    ("qn", quality.to_string()),
+                    ("platform", "web".to_string()),
+                    ("ptype", "8".to_string()),
+                    ("dolby", "5".to_string()),
+                    ("panorama", "1".to_string()),
+                    ("eotf", "0,1,2".to_string()),
+                    ("req_reason", "0".to_string()),
+                    ("supported_drms", "0,1,2,3".to_string()),
+                    ("special_scenario", "2".to_string()),
+                    ("web_location", "444.7".to_string()),
+                ],
+            )
+            .await?;
+        if resp.code != 0 {
+            return Err(anyhow!(
+                "live play API error {}: {}",
+                resp.code,
+                resp.message
+            ));
+        }
+        resp.data
+            .ok_or_else(|| anyhow!("live play response has no data"))
+    }
+
+    pub async fn get_best_live_stream_urls(&self, room_id: i64) -> Result<Vec<String>> {
+        let initial = self.get_live_play_info(room_id, 0).await?;
+        if initial.live_status != 1 {
+            return Err(anyhow!("直播间当前未开播"));
+        }
+        let best_quality = initial.highest_available_quality().unwrap_or_default();
+        let selected = if best_quality > 0 {
+            self.get_live_play_info(room_id, best_quality)
+                .await
+                .unwrap_or(initial)
+        } else {
+            initial
+        };
+        let urls = selected.stream_urls();
+        if urls.is_empty() {
+            return Err(anyhow!("最高画质没有可用播放地址"));
+        }
+        Ok(urls)
+    }
+
+    pub async fn get_default_live_stream_urls(&self, room_id: i64) -> Result<Vec<String>> {
+        let info = self.get_live_play_info(room_id, 0).await?;
+        if info.live_status != 1 {
+            return Err(anyhow!("直播间当前未开播"));
+        }
+        let urls = info.default_stream_urls();
+        if urls.is_empty() {
+            return Err(anyhow!("直播默认播放地址为空"));
+        }
+        Ok(urls)
     }
 
     /// Get live room info
@@ -1002,7 +1533,7 @@ impl ApiClient {
             req = req.header(COOKIE, cookies.as_str());
         }
 
-        let resp = req.send().await?;
+        let resp = req.send().await?.error_for_status()?;
         let api_resp: ApiResponse<super::live::LiveRoomInfo> = resp.json().await?;
 
         api_resp
@@ -1050,17 +1581,11 @@ impl ApiClient {
                 req = req.header(COOKIE, cookies.as_str());
             }
 
-            let resp = req.send().await?;
+            let resp = req.send().await?.error_for_status()?;
             let resp_text = resp.text().await?;
 
             let api_resp: ApiResponse<super::live_ws::DanmuInfoData> =
-                serde_json::from_str(&resp_text).map_err(|e| {
-                    anyhow::anyhow!(
-                        "解析失败: {} (响应: {})",
-                        e,
-                        &resp_text[..resp_text.len().min(200)]
-                    )
-                })?;
+                serde_json::from_str(&resp_text).map_err(|e| anyhow::anyhow!("解析失败: {e}"))?;
 
             if api_resp.code == 0 {
                 return api_resp.data.ok_or_else(|| anyhow::anyhow!("响应无数据"));
@@ -1081,6 +1606,18 @@ impl ApiClient {
         }
     }
 
+    pub async fn get_buvid3(&self) -> Result<String> {
+        let url = "https://api.bilibili.com/x/frontend/finger/spi";
+        let response: ApiResponse<serde_json::Value> = self.get(url).await?;
+        response
+            .data
+            .as_ref()
+            .and_then(|data| data.get("b_3"))
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| anyhow!("buvid3 响应为空"))
+    }
+
     /// Get live room history danmaku
     pub async fn get_history_danmaku(
         &self,
@@ -1096,7 +1633,7 @@ impl ApiClient {
             req = req.header(COOKIE, cookies.as_str());
         }
 
-        let resp = req.send().await?;
+        let resp = req.send().await?.error_for_status()?;
         let api_resp: ApiResponse<super::live_ws::HistoryDanmakuData> = resp.json().await?;
 
         if api_resp.code != 0 {
@@ -1110,8 +1647,118 @@ impl ApiClient {
         api_resp.data.ok_or_else(|| anyhow::anyhow!("响应无数据"))
     }
 }
+fn parse_home_videos(items: Vec<serde_json::Value>) -> Vec<super::recommend::VideoItem> {
+    items
+        .into_iter()
+        .filter_map(|item| serde_json::from_value::<super::recommend::VideoItem>(item).ok())
+        .filter(|video| video.id > 0 && video.bvid.is_some())
+        .collect()
+}
+
 impl Default for ApiClient {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod live_contract_tests {
+    use super::ApiClient;
+    use crate::api::space::SpaceVideoOrder;
+    use crate::storage::VideoQuality;
+
+    #[test]
+    fn bangumi_v2_playurl_extracts_nested_video_info() {
+        let value = serde_json::json!({
+            "code": 0,
+            "result": {
+                "video_info": {
+                    "dash": {
+                        "video": [{"id": 80, "bandwidth": 10}],
+                        "audio": [{"id": 30280, "bandwidth": 5}],
+                        "dolby": null,
+                        "flac": null
+                    }
+                },
+                "play_view_business_info": {"episode_info": {"cid": 1}}
+            }
+        });
+        let playurl = ApiClient::parse_bangumi_play_url(&value).unwrap();
+        assert_eq!(playurl.dash.video[0].id, 80);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a logged-in account and network access"]
+    async fn current_space_and_favorite_contracts_deserialize() {
+        let credentials = crate::storage::load_credentials().expect("load credentials");
+        let mid = credentials
+            .dede_user_id
+            .parse::<i64>()
+            .expect("numeric DedeUserID");
+        let client = ApiClient::with_cookies(&credentials);
+
+        client.get_space_info(mid).await.expect("space info");
+        client
+            .get_space_videos(mid, 1, 10, SpaceVideoOrder::Latest)
+            .await
+            .expect("latest submissions");
+        client
+            .get_space_videos(mid, 1, 10, SpaceVideoOrder::Popular)
+            .await
+            .expect("popular submissions");
+        let folders = client
+            .get_favorite_folders(mid)
+            .await
+            .expect("favorite folders");
+        if let Some(folder) = folders.first() {
+            let resources = client
+                .get_favorite_resources(
+                    folder.id,
+                    1,
+                    10,
+                    crate::api::favorite::FavoriteOrder::RecentlyFavorited,
+                )
+                .await
+                .expect("favorite resources");
+            if let Some(bvid) = resources
+                .medias
+                .iter()
+                .find_map(|media| media.bvid.as_deref())
+            {
+                let info = client.get_video_info(bvid).await.expect("video info");
+                let play_url = client
+                    .get_play_url(bvid, info.cid, VideoQuality::Best)
+                    .await
+                    .expect("playurl");
+                crate::api::cdn::rank_streams(&play_url, VideoQuality::Best)
+                    .await
+                    .expect("reachable CDN streams");
+            }
+        }
+
+        let watch_later = client.get_watch_later(1, 2).await.expect("watch later");
+        assert!(watch_later.count >= watch_later.list.len() as i64);
+        let collected = client
+            .get_collected_folders(mid, 1, 2)
+            .await
+            .expect("collected folders");
+        if let Some(folder) = collected
+            .list
+            .iter()
+            .find(|folder| folder.state.unwrap_or_default() == 0 && folder.mid != 0)
+        {
+            client
+                .get_collected_season_videos(folder.mid, folder.id, 1, 2)
+                .await
+                .expect("collected season videos");
+        }
+        let live_rooms = client.get_live_home_rooms().await.expect("live homepage");
+        if let Some(room) = live_rooms.first() {
+            let urls = client
+                .get_best_live_stream_urls(room.roomid)
+                .await
+                .expect("best live stream URLs");
+            assert!(!urls.is_empty());
+        }
     }
 }
